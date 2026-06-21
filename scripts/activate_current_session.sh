@@ -10,6 +10,22 @@ ENV_FILE="$CONFIG_DIR/.env"
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+is_bridge_pid() {
+  local candidate="${1:-}"
+  local command_line=""
+  [[ "$candidate" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$candidate" 2>/dev/null || return 1
+  command_line="$(/bin/ps -p "$candidate" -o command= 2>/dev/null || true)"
+  [[ "$command_line" == *"bridge.py run"* ]]
+}
+
+replace_enabled() {
+  case "${1:-}" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Yy]|[Oo][Nn]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 replace_existing="${TELEGRAM_REPLACE_EXISTING:-}"
 if [[ -z "$replace_existing" && -f "$ENV_FILE" ]]; then
   replace_existing="$(/usr/bin/python3 -c 'import pathlib,sys
@@ -39,21 +55,21 @@ if [[ -f "$RUNTIME" ]]; then
   existing_thread="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("thread_id",""))' "$RUNTIME" 2>/dev/null || true)"
 fi
 
-if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+if is_bridge_pid "$existing_pid"; then
   if [[ "$existing_thread" == "$THREAD_ID" ]]; then
     echo "Telegram bridge already active for current Codex session: pid=$existing_pid thread=$THREAD_ID"
     exit 0
   fi
-  if [[ "${replace_existing,,}" =~ ^(1|true|yes|y|on)$ ]]; then
+  if replace_enabled "$replace_existing"; then
     echo "Replacing Telegram bridge from another Codex session: pid=$existing_pid thread=$existing_thread"
     kill "$existing_pid" 2>/dev/null || true
     for _ in 1 2 3 4 5; do
-      if ! kill -0 "$existing_pid" 2>/dev/null; then
+      if ! is_bridge_pid "$existing_pid"; then
         break
       fi
       sleep 0.2
     done
-    if kill -0 "$existing_pid" 2>/dev/null; then
+    if is_bridge_pid "$existing_pid"; then
       kill -9 "$existing_pid" 2>/dev/null || true
     fi
   else
@@ -84,7 +100,7 @@ chmod 600 "$tmp"
 mv "$tmp" "$RUNTIME"
 
 sleep 1
-if ! kill -0 "$pid" 2>/dev/null; then
+if ! is_bridge_pid "$pid"; then
   echo "Telegram bridge failed to stay running. Check log: $LOG" >&2
   exit 1
 fi
