@@ -98,6 +98,7 @@ TELEGRAM_REQUIRE_CODEX_PREFIX=0
 TELEGRAM_INBOX_ENABLED=1
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
+TELEGRAM_MEMORY_AUTO=1
 ```
 
 To create the bot token:
@@ -218,12 +219,14 @@ By default, long-term memory is appended to:
 ~/.codex/memories/telegram-memory.jsonl
 ```
 
-Normal Telegram conversation is not written to long-term memory. Full conversation records go to the inbox files only. Long-term memory is written only when the allowlisted Telegram user explicitly asks for it:
+Normal Telegram conversation is not blindly written to long-term memory. Full conversation records go to the inbox files only. When `TELEGRAM_MEMORY_AUTO=1`, Codex decides whether the latest exchange contains a stable preference, persona fact, durable project rule, or correction worth remembering. It writes only those short memory items.
+
+You can still force a memory when needed:
 
 ```text
-/remember Use this preference in future Telegram replies.
-记住：以后 Telegram 回复要更短。
-remember: Prefer concise progress updates.
+/remember <stable preference to keep>
+记住：<只放你明确想长期保留的偏好>
+remember: <stable preference to keep>
 ```
 
 Before each `codex exec` call, the bridge injects the persistent persona and the most recent explicit memory records into the prompt as context.
@@ -243,6 +246,7 @@ Relevant config:
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_PERSONA_PATH=~/.codex/memories/telegram-persona.md
 TELEGRAM_MEMORY_ENABLED=1
+TELEGRAM_MEMORY_AUTO=1
 TELEGRAM_MEMORY_JSONL_PATH=~/.codex/memories/telegram-memory.jsonl
 TELEGRAM_MEMORY_RECENT_EVENTS=12
 TELEGRAM_MEMORY_MAX_CHARS=8000

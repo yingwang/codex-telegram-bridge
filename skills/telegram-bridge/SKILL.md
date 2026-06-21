@@ -48,7 +48,7 @@ The bridge may inject a local persistent persona and recent selective memory on 
 ~/.codex/memories/telegram-memory.jsonl
 ```
 
-Treat these as private local state. Do not commit or print them unless the user explicitly asks. Normal Telegram messages go to inbox only. Long-term memory is written only by `/remember <text>` or messages starting with `记住：` / `remember:`.
+Treat these as private local state. Do not commit or print them unless the user explicitly asks. Normal Telegram messages go to inbox. Long-term memory is selective: Codex judges whether a Telegram exchange contains a stable preference, durable persona fact, project/workflow rule, or correction worth remembering. `/remember <text>` or messages starting with `记住：` / `remember:` force a memory.
 
 At the start of every turn where this skill is used, check the private inbox for unread Telegram records before doing anything else:
 
