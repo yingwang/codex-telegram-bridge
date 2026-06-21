@@ -7,8 +7,30 @@ RUNTIME="$CONFIG_DIR/current-session.json"
 LOG="$CONFIG_DIR/current-session.log"
 THREAD_ID="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}"
 ENV_FILE="$CONFIG_DIR/.env"
+HOOK_LOG="$CONFIG_DIR/session-start-hook.log"
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+hook_session_id=""
+if [[ ! -t 0 ]]; then
+  hook_session_id="$(/usr/bin/python3 -c 'import json,sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if data.get("hook_event_name") == "SessionStart":
+    print(data.get("session_id", ""))
+' 2>/dev/null || true)"
+fi
+
+if [[ -n "$hook_session_id" ]]; then
+  THREAD_ID="$hook_session_id"
+  mkdir -p "$CONFIG_DIR"
+  touch "$HOOK_LOG"
+  chmod 600 "$HOOK_LOG"
+  exec >>"$HOOK_LOG" 2>&1
+  echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] SessionStart activation thread=$THREAD_ID"
+fi
 
 is_bridge_pid() {
   local candidate="${1:-}"
@@ -46,6 +68,7 @@ if [[ -z "$THREAD_ID" ]]; then
   exit 2
 fi
 
+export CODEX_THREAD_ID="$THREAD_ID"
 mkdir -p "$CONFIG_DIR"
 
 existing_pid=""

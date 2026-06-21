@@ -142,9 +142,33 @@ When `TELEGRAM_ALLOWED_CHAT_IDS` is empty, the bridge is in discovery mode. It w
 
 Use this from inside a Codex CLI session. It binds Telegram to that session's explicit `CODEX_THREAD_ID`, starts a user-level background long-polling process, and leaves the Codex CLI usable.
 
+To activate it automatically whenever Codex starts or resumes a CLI session, add this user-level hook to `~/.codex/hooks.json`, then review and trust it once with `/hooks`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash /absolute/path/to/codex-telegram-bridge/scripts/activate_current_session.sh",
+            "timeout": 30,
+            "statusMessage": "Starting Telegram bridge"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Codex supplies the active session ID to lifecycle hooks as `session_id` in the JSON object on standard input. The activation script accepts that hook input as well as the `CODEX_THREAD_ID` environment variable used by manual activation. Hook diagnostics are written privately to `~/.codex/channels/telegram/session-start-hook.log` so they are not injected into the conversation as developer context.
+
 This is the closest practical equivalent to a Claude Code-style channel bridge for Codex. It does not install a service, does not use LaunchAgent, and does not open a port. Stop it with `./scripts/deactivate.sh` or `/stop` from Telegram.
 
-This requires `CODEX_THREAD_ID` to be present. If the script is launched from an ordinary terminal, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
+Manual activation requires `CODEX_THREAD_ID` to be present; SessionStart hooks provide the equivalent `session_id` on standard input. If the script is launched from an ordinary terminal without either value, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
 
 If `TELEGRAM_REPLACE_EXISTING=1`, activating from a new Codex session automatically stops the previous bridge PID recorded in `current-session.json` and binds Telegram to the new `CODEX_THREAD_ID`. If it is unset or `0`, activation refuses to replace another live session and tells you to stop it first.
 
