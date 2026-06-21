@@ -69,32 +69,52 @@ To find your numeric chat ID:
 
 When `TELEGRAM_ALLOWED_CHAT_IDS` is empty, the bridge is in discovery mode. It will reply to `/id` or `/start` with the chat ID, but it will not run Codex.
 
-## Run
+## Ways to Use
 
-To bind Telegram to the current Codex CLI session, start the bridge from inside that Codex session:
+### Current Session, Background
 
 ```bash
 ./scripts/activate_current_session.sh
 ```
 
-This requires `CODEX_THREAD_ID` to be present. If the script is launched from an ordinary terminal, it exits instead of accidentally using an arbitrary session.
+Use this from inside a Codex CLI session. It binds Telegram to that session's explicit `CODEX_THREAD_ID`, starts a user-level background long-polling process, and leaves the Codex CLI usable.
 
-Activation checks Telegram Bot API access before starting. If Codex sandboxing blocks network access, rerun the same command with scoped network approval.
+This is the closest practical equivalent to a Claude Code-style channel bridge for Codex. It does not install a service, does not use LaunchAgent, and does not open a port. Stop it with `./scripts/deactivate.sh` or `/stop` from Telegram.
 
-For a generic foreground bridge that creates a new `codex exec` run per Telegram message:
+This requires `CODEX_THREAD_ID` to be present. If the script is launched from an ordinary terminal, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
+
+### Current Session, Foreground
+
+```bash
+./scripts/run_current_session.sh
+```
+
+Use this when you want the bridge to stay strictly inside the current shell command. It also binds to `CODEX_THREAD_ID`, but it occupies the terminal until you press `Ctrl-C` or send `/stop`.
+
+### Manual Mode, New Codex Exec Per Message
 
 ```bash
 ./scripts/run_manual.sh
 ```
 
-The current-session activator starts a user-level background process bound to the explicit `CODEX_THREAD_ID`. It does not install a service, does not use LaunchAgent, and does not open a port. Use `./scripts/deactivate.sh` or `/stop` to stop it.
+Use this from any terminal if you do not want to bind to an existing Codex session. Each Telegram message creates a fresh `codex exec` run in `CODEX_WORKDIR`.
 
-The manual and debug scripts are foreground processes. They stop when you press `Ctrl-C` or close the terminal.
-
-For foreground debugging against the current Codex session:
+### Check Status
 
 ```bash
-./scripts/run_current_session.sh
+./scripts/status.sh
+```
+
+### Stop
+
+```bash
+./scripts/deactivate.sh
+```
+
+You can also stop the running bridge from Telegram:
+
+```text
+/stop
 ```
 
 ## Send from Codex CLI
@@ -105,16 +125,21 @@ From the same Codex CLI session, send a Telegram message without starting anothe
 ./scripts/send.sh "message from Codex"
 ```
 
-The running bridge can also be stopped from Telegram:
+## Codex Skill and Prompt
+
+If you installed the skill, trigger it in Codex CLI with:
 
 ```text
-/stop
+$telegram-bridge
 ```
 
-Or from the Codex CLI session:
+If you installed the prompt, trigger it with:
 
-```bash
-./scripts/deactivate.sh
+```text
+/prompts:telegram
+/prompts:telegram status
+/prompts:telegram stop
+/prompts:telegram send message from Codex
 ```
 
 ## Inbox
@@ -128,7 +153,7 @@ If `TELEGRAM_INBOX_ENABLED=1`, inbound Telegram messages and outbound Codex repl
 
 These files are local state. Do not commit them.
 
-## Slash Prompt
+## Slash Command Limitation
 
 Codex CLI does not currently support arbitrary bare custom slash commands such as `/telegram`. It supports custom prompts as `/prompts:name`, so this repo includes:
 
