@@ -16,6 +16,19 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Telegram bot chats are not end-to-end encrypted. Do not send passwords, API keys, private keys, or signing secrets through Telegram.
 - Keep `CODEX_WORKDIR` narrow. The bridge defaults to the directory it is launched from if `CODEX_WORKDIR` is not set.
 
+## Trust Model
+
+Read this before pointing the bridge at a machine you care about.
+
+This bridge executes code. Every allowed Telegram message is run through `codex exec` in `CODEX_WORKDIR`, so the allowlist is not a spam filter; it is the code-execution boundary. Anyone who can post to the bot from a chat in `TELEGRAM_ALLOWED_CHAT_IDS` can run Codex on the host, and that includes anyone who gains access to your Telegram account or picks up an unlocked phone that is signed in to it.
+
+A few consequences follow from that:
+
+- Allow private chats only, unless you really mean otherwise. The allowlist matches the Telegram `chat_id`. For a private chat that equals your own user id, but for a group it is the group's id, which means every member of that group can drive Codex. Treat adding a group id as trusting everyone in it.
+- Keep `CODEX_WORKDIR` narrow and prefer the tightest sandbox that still does the job. Set `CODEX_SANDBOX=read-only` for periods when you want the bot to answer questions but not modify files.
+- `/persona` and automatic memory write persistent local state that is injected into every later prompt. A single crafted message can plant a durable instruction, so inspect `~/.codex/memories/` if the bot starts behaving unexpectedly.
+- The bridge runs with whatever permissions the launching user has. Run it as an unprivileged user, not as root.
+
 ## Technical Architecture
 
 ```mermaid
