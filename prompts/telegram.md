@@ -1,6 +1,6 @@
 ---
 description: Activate or use the Telegram bridge for this Codex session
-argument-hint: [activate|status|stop|send MESSAGE]
+argument-hint: [activate|status|stop|send MESSAGE|send-file PATH [CAPTION]]
 ---
 
 Use $telegram-bridge for the current Codex CLI session.
@@ -11,6 +11,6 @@ Interpret `$ARGUMENTS` as follows:
 - If `status`: check whether the bridge is active.
 - If `stop`, `deactivate`, or `disable`: stop the bridge for the current session.
 - If it starts with `send `: send the remaining text to Telegram.
+- If it starts with `send-file `: send the supported image, Markdown, or PDF path to Telegram with the optional remaining text as its caption.
 
 Do not use Claude Code's Telegram channel. Do not read or modify `~/.claude`. Do not use `codex exec resume --last`.
-

@@ -41,6 +41,8 @@ If another session already owns the bridge, `activate_current_session.sh` may re
 
 Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled.
 
+The bridge accepts Telegram photos, image documents (`.jpg`, `.jpeg`, `.png`, `.webp`), Markdown (`.md`, `.markdown`), and PDF files. The caption is the task. In prefix mode, the caption must begin with `/codex`. Incoming files live only in a private per-request directory under `CODEX_WORKDIR` and are deleted after processing.
+
 The bridge may inject a local persistent persona and recent selective memory on each Telegram-triggered `codex exec` call. By default these live outside the repository:
 
 ```text
@@ -73,7 +75,9 @@ Supported bot commands:
 /codex <task>
 ```
 
-Attachments are intentionally ignored for now.
+Voice, audio, video, stickers, archives, and other attachment types are not supported.
+
+Codex can return generated images, Markdown, and PDF files. It must write them to the exact per-request artifacts directory included in the bridge prompt and append a `<telegram_attachments>` JSON block. The bridge validates that each path remains inside that directory before uploading it.
 
 ## Send
 
@@ -91,6 +95,12 @@ printf '%s\n' "message text" | ./scripts/send.sh
 ```
 
 Keep messages concise enough for Telegram. The script chunks longer messages.
+
+To send a supported file directly:
+
+```bash
+./scripts/send_file.sh "/path/to/file.pdf" "optional caption"
+```
 
 ## Stop
 

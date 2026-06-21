@@ -12,7 +12,8 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Incoming Telegram messages bind to the current Codex thread only when started with a current-session script such as `./scripts/activate_current_session.sh` or `./scripts/run_current_session.sh`.
 - The bridge never uses `codex exec resume --last`; it uses the explicit `CODEX_THREAD_ID` from the current Codex CLI session.
 - The bridge runs `codex exec` with `--sandbox workspace-write`.
-- Attachments are ignored for now.
+- Incoming images, Markdown, and PDF files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
+- Codex can return only supported files created inside that request's dedicated `artifacts/` directory. Absolute paths, `..` escapes, symlinks, unsupported extensions, oversized files, and excess file counts are rejected.
 - Telegram bot chats are not end-to-end encrypted. Do not send passwords, API keys, private keys, or signing secrets through Telegram.
 - Keep `CODEX_WORKDIR` narrow. The bridge defaults to the directory it is launched from if `CODEX_WORKDIR` is not set.
 
@@ -52,6 +53,10 @@ flowchart TD
   reply --> bridge
   bridge --> bot
   bot --> user
+  bot -->|image / Markdown / PDF| attachments[Private request directory]
+  attachments --> bridge
+  codex --> artifacts[Generated artifacts directory]
+  artifacts -->|validated upload| bridge
 
   bridge --> inbox[Optional inbox<br/>inbox.md / inbox.jsonl]
   persona[Persistent persona<br/>~/.codex/memories/telegram-persona.md] --> bridge
@@ -110,6 +115,10 @@ CODEX_TIMEOUT_SECONDS=1200
 TELEGRAM_REQUIRE_CODEX_PREFIX=0
 TELEGRAM_REPLACE_EXISTING=1
 TELEGRAM_ACK_MESSAGE=
+TELEGRAM_ATTACHMENTS_ENABLED=1
+TELEGRAM_MAX_DOWNLOAD_BYTES=20971520
+TELEGRAM_MAX_UPLOAD_BYTES=20971520
+TELEGRAM_MAX_ARTIFACT_FILES=4
 TELEGRAM_INBOX_ENABLED=1
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
@@ -174,6 +183,57 @@ If `TELEGRAM_REPLACE_EXISTING=1`, activating from a new Codex session automatica
 
 `TELEGRAM_ACK_MESSAGE` controls the immediate acknowledgement sent before Codex finishes. Set it to an empty value to disable the acknowledgement.
 
+## Attachments
+
+The bridge accepts these Telegram attachments:
+
+```text
+Images:   .jpg, .jpeg, .png, .webp
+Text:     .md, .markdown
+Document: .pdf
+```
+
+For images, the bridge downloads the largest Telegram photo variant and passes it to Codex with `codex exec --image`. Images sent as Telegram documents are also supported. Markdown and PDF files are downloaded and exposed to Codex as local paths in the prompt.
+
+The message caption is used as the task:
+
+```text
+[image] Review this UI and return an improved mockup.
+[paper.pdf] Summarize section 3 and return notes.md.
+[/codex with a caption] Works when TELEGRAM_REQUIRE_CODEX_PREFIX=1.
+```
+
+If no caption is provided, the bridge supplies a short default instruction to inspect the attachment.
+
+Every Codex request gets a private temporary directory under `CODEX_WORKDIR`:
+
+```text
+.codex-telegram-<random>/
+  incoming/
+  artifacts/
+```
+
+The bridge deletes the complete directory after processing. Incoming files are not copied into inbox or memory; those records contain only the filename, type, and size.
+
+To return a generated or modified file, Codex writes it under the request's `artifacts/` directory and appends:
+
+```xml
+<telegram_attachments>{"files":[{"path":"result.png","type":"photo","caption":"Preview"},{"path":"notes.md","type":"document"}]}</telegram_attachments>
+```
+
+The bridge accepts only paths inside that exact artifacts directory and supports images, Markdown, and PDF output. Images use Telegram `sendPhoto` for preview and fall back to `sendDocument` if Telegram rejects the photo representation. Markdown and PDFs use `sendDocument`.
+
+Relevant limits:
+
+```bash
+TELEGRAM_ATTACHMENTS_ENABLED=1
+TELEGRAM_MAX_DOWNLOAD_BYTES=20971520
+TELEGRAM_MAX_UPLOAD_BYTES=20971520
+TELEGRAM_MAX_ARTIFACT_FILES=4
+```
+
+The defaults are intentionally conservative. Telegram metadata and filename extensions are treated as hints, not permission to execute a file.
+
 ### Current Session, Foreground
 
 ```bash
@@ -214,6 +274,13 @@ From the same Codex CLI session, send a Telegram message without starting anothe
 
 ```bash
 ./scripts/send.sh "message from Codex"
+```
+
+Send an image, Markdown file, or PDF directly:
+
+```bash
+./scripts/send_file.sh ./report.pdf "Generated report"
+./scripts/send_file.sh ./preview.png "Preview"
 ```
 
 ## Codex Skill and Prompt
