@@ -1,0 +1,10 @@
+.env
+*.log
+*.pid
+*.tmp
+state*.json
+current-session.json
+inbox.md
+inbox.jsonl
+__pycache__/
+.DS_Store
