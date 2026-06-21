@@ -41,6 +41,8 @@ flowchart TD
   bot --> user
 
   bridge --> inbox[Optional inbox<br/>inbox.md / inbox.jsonl]
+  persona[Persistent persona<br/>~/.codex/memories/telegram-persona.md] --> bridge
+  memory[Automatic memory<br/>~/.codex/memories/telegram-memory.jsonl] <--> bridge
 
   cli[Codex CLI user] --> activate[activate_current_session.sh]
   cli --> foreground[run_current_session.sh]
@@ -94,6 +96,8 @@ CODEX_SANDBOX=workspace-write
 CODEX_TIMEOUT_SECONDS=1200
 TELEGRAM_REQUIRE_CODEX_PREFIX=0
 TELEGRAM_INBOX_ENABLED=1
+TELEGRAM_PERSONA_ENABLED=1
+TELEGRAM_MEMORY_ENABLED=1
 ```
 
 To create the bot token:
@@ -195,6 +199,39 @@ If `TELEGRAM_INBOX_ENABLED=1`, inbound Telegram messages and outbound Codex repl
 ```
 
 These files are local state. Do not commit them.
+
+## Persona and Memory
+
+The bridge can load one persistent Telegram persona and automatically keep recent Telegram memory.
+
+By default, persona is read from:
+
+```text
+~/.codex/memories/telegram-persona.md
+```
+
+Create that file with stable instructions such as name, tone, address terms, boundaries, and things to avoid. The file is local private state and is not part of this repository.
+
+By default, automatic memory is appended to:
+
+```text
+~/.codex/memories/telegram-memory.jsonl
+```
+
+For each Telegram exchange, the bridge writes both inbound Telegram messages and outbound Codex replies. Before each `codex exec` call, it injects the most recent memory records into the prompt as context.
+
+Relevant config:
+
+```bash
+TELEGRAM_PERSONA_ENABLED=1
+TELEGRAM_PERSONA_PATH=~/.codex/memories/telegram-persona.md
+TELEGRAM_MEMORY_ENABLED=1
+TELEGRAM_MEMORY_JSONL_PATH=~/.codex/memories/telegram-memory.jsonl
+TELEGRAM_MEMORY_RECENT_EVENTS=12
+TELEGRAM_MEMORY_MAX_CHARS=8000
+```
+
+This is not model-native permanent memory. It is local file-backed memory: editable, inspectable, deletable, and private to the machine where the bridge runs.
 
 ## Slash Command Limitation
 

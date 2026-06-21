@@ -41,6 +41,15 @@ If another session already owns the bridge, do not replace it silently. Ask befo
 
 Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled.
 
+The bridge may inject a local persistent persona and recent automatic memory on each Telegram-triggered `codex exec` call. By default these live outside the repository:
+
+```text
+~/.codex/memories/telegram-persona.md
+~/.codex/memories/telegram-memory.jsonl
+```
+
+Treat these as private local state. Do not commit or print them unless the user explicitly asks.
+
 At the start of every turn where this skill is used, check the private inbox for unread Telegram records before doing anything else:
 
 ```bash
