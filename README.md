@@ -16,6 +16,49 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Telegram bot chats are not end-to-end encrypted. Do not send passwords, API keys, private keys, or signing secrets through Telegram.
 - Keep `CODEX_WORKDIR` narrow. The bridge defaults to the directory it is launched from if `CODEX_WORKDIR` is not set.
 
+## Technical Architecture
+
+```mermaid
+flowchart TD
+  user[Telegram user] --> bot[Telegram bot]
+  bot <-->|Bot API long polling| bridge[bridge.py]
+
+  env[Private config<br/>~/.codex/channels/telegram/.env] --> bridge
+  state[Runtime state<br/>~/.codex/channels/telegram/] <--> bridge
+
+  bridge --> gate{Allowed chat ID?}
+  gate -->|No| reject[Ignore or reply with /id in discovery mode]
+  gate -->|Yes| mode{Run mode}
+
+  mode -->|Current session| resume[codex exec resume<br/>&lt;CODEX_THREAD_ID&gt;]
+  mode -->|Manual mode| exec[codex exec<br/>-C CODEX_WORKDIR]
+
+  resume --> codex[Codex]
+  exec --> codex
+  codex --> reply[Final response]
+  reply --> bridge
+  bridge --> bot
+  bot --> user
+
+  bridge --> inbox[Optional inbox<br/>inbox.md / inbox.jsonl]
+
+  cli[Codex CLI user] --> activate[activate_current_session.sh]
+  cli --> foreground[run_current_session.sh]
+  cli --> manual[run_manual.sh]
+  cli --> send[send.sh]
+  cli --> stop[deactivate.sh]
+
+  activate --> bridge
+  foreground --> bridge
+  manual --> bridge
+  send --> bot
+  stop --> bridge
+```
+
+The bridge is a local Telegram Bot API client. Telegram never connects inbound to your machine; the bridge repeatedly calls `getUpdates`, receives allowed messages, invokes Codex, and sends the final response back with `sendMessage`.
+
+In current-session mode, the bridge does not guess which Codex session to use. It requires `CODEX_THREAD_ID` from the active Codex CLI session and calls `codex exec resume <CODEX_THREAD_ID>`. Manual mode skips session binding and creates a fresh `codex exec` run for each Telegram message.
+
 ## Install
 
 Clone the repo somewhere local, then create a private config directory:
