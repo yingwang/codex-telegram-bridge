@@ -42,7 +42,7 @@ flowchart TD
 
   bridge --> inbox[Optional inbox<br/>inbox.md / inbox.jsonl]
   persona[Persistent persona<br/>~/.codex/memories/telegram-persona.md] --> bridge
-  memory[Automatic memory<br/>~/.codex/memories/telegram-memory.jsonl] <--> bridge
+  memory[Selective memory<br/>~/.codex/memories/telegram-memory.jsonl] <--> bridge
 
   cli[Codex CLI user] --> activate[activate_current_session.sh]
   cli --> foreground[run_current_session.sh]
@@ -202,7 +202,7 @@ These files are local state. Do not commit them.
 
 ## Persona and Memory
 
-The bridge can load one persistent Telegram persona and automatically keep recent Telegram memory.
+The bridge can load one persistent Telegram persona and a selective long-term memory file.
 
 By default, persona is read from:
 
@@ -212,13 +212,30 @@ By default, persona is read from:
 
 Create that file with stable instructions such as name, tone, address terms, boundaries, and things to avoid. The file is local private state and is not part of this repository.
 
-By default, automatic memory is appended to:
+By default, long-term memory is appended to:
 
 ```text
 ~/.codex/memories/telegram-memory.jsonl
 ```
 
-For each Telegram exchange, the bridge writes both inbound Telegram messages and outbound Codex replies. Before each `codex exec` call, it injects the most recent memory records into the prompt as context.
+Normal Telegram conversation is not written to long-term memory. Full conversation records go to the inbox files only. Long-term memory is written only when the allowlisted Telegram user explicitly asks for it:
+
+```text
+/remember Use this preference in future Telegram replies.
+记住：以后 Telegram 回复要更短。
+remember: Prefer concise progress updates.
+```
+
+Before each `codex exec` call, the bridge injects the persistent persona and the most recent explicit memory records into the prompt as context.
+
+Memory commands:
+
+```text
+/persona
+/persona <new persistent persona>
+/remember <memory item>
+/memory
+```
 
 Relevant config:
 

@@ -24,6 +24,19 @@ DEFAULT_INBOX_JSONL_PATH = Path.home() / ".codex" / "channels" / "telegram" / "i
 DEFAULT_PERSONA_PATH = Path.home() / ".codex" / "memories" / "telegram-persona.md"
 DEFAULT_MEMORY_JSONL_PATH = Path.home() / ".codex" / "memories" / "telegram-memory.jsonl"
 TELEGRAM_MESSAGE_LIMIT = 3900
+EXPLICIT_MEMORY_PREFIXES = (
+    "记住这个：",
+    "记住这个:",
+    "请记住：",
+    "请记住:",
+    "记住：",
+    "记住:",
+    "记住 ",
+    "remember:",
+    "remember ",
+    "please remember:",
+    "please remember ",
+)
 
 
 class BridgeError(RuntimeError):
@@ -304,29 +317,53 @@ def append_inbox_event(
     config.inbox_path.chmod(0o600)
 
 
-def append_memory_event(
+def append_memory_entry(
     config: Config,
     *,
-    direction: str,
     text: str,
-    sender: str,
+    source: str,
     message_id: str | int | None = None,
 ) -> None:
     if not config.memory_enabled:
         return
 
+    memory_text = text.strip()
+    if not memory_text:
+        return
+
     event = {
         "ts": utc_timestamp(),
-        "direction": direction,
-        "sender": sender,
+        "kind": "explicit",
+        "source": source,
         "message_id": str(message_id) if message_id is not None else None,
-        "text": text,
+        "text": memory_text,
     }
     config.memory_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     config.memory_jsonl_path.parent.chmod(0o700)
     with config.memory_jsonl_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
     config.memory_jsonl_path.chmod(0o600)
+
+
+def write_persona(config: Config, text: str) -> None:
+    persona = text.strip()
+    if not persona:
+        raise BridgeError("persona text is empty")
+    config.persona_path.parent.mkdir(parents=True, exist_ok=True)
+    config.persona_path.parent.chmod(0o700)
+    config.persona_path.write_text(persona + "\n", encoding="utf-8")
+    config.persona_path.chmod(0o600)
+
+
+def explicit_memory_text(text: str) -> str | None:
+    stripped = text.strip()
+    lowered = stripped.lower()
+    for prefix in EXPLICIT_MEMORY_PREFIXES:
+        candidate = lowered if prefix.isascii() else stripped
+        if candidate.startswith(prefix):
+            body = stripped[len(prefix):].strip()
+            return body or None
+    return None
 
 
 def read_text_file(path: Path, max_chars: int) -> str:
@@ -360,14 +397,17 @@ def recent_memory(config: Config) -> str:
 
     rendered: list[str] = []
     for event in events[-config.memory_recent_events:]:
-        direction = event.get("direction", "?")
-        label = "Telegram" if direction == "in" else "Codex"
         ts = event.get("ts", "unknown-time")
-        sender = event.get("sender", "unknown")
+        source = event.get("source") or event.get("sender") or "unknown"
         text = str(event.get("text", "")).strip()
         if not text:
             continue
-        rendered.append(f"[{ts}] {label} / {sender}:\n{text}")
+        if event.get("kind") == "explicit":
+            rendered.append(f"[{ts}] remembered from {source}:\n{text}")
+        else:
+            direction = event.get("direction", "?")
+            label = "Telegram" if direction == "in" else "Codex"
+            rendered.append(f"[{ts}] {label} / {source}:\n{text}")
 
     memory = "\n\n".join(rendered).strip()
     if len(memory) > config.memory_max_chars:
@@ -415,7 +455,7 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
         send_message(
             config,
             chat_id,
-            "可用命令：\n/start 检查连接\n/id 查看 chat_id\n/status 查看配置摘要\n/stop 停止当前 bridge\n/codex <任务> 让 Codex 执行\n\n普通文字也会发送给 Codex，除非 TELEGRAM_REQUIRE_CODEX_PREFIX=1。",
+            "可用命令：\n/start 检查连接\n/id 查看 chat_id\n/status 查看配置摘要\n/stop 停止当前 bridge\n/persona 查看人设\n/persona <内容> 设置人设\n/remember <内容> 写入长期记忆\n/memory 查看最近长期记忆\n/codex <任务> 让 Codex 执行\n\n普通文字也会发送给 Codex，除非 TELEGRAM_REQUIRE_CODEX_PREFIX=1。长期记忆只通过 /remember 或“记住：...”写入。",
         )
         return
     if command == "/status":
@@ -429,6 +469,8 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
                     f"workdir: {config.codex_workdir}",
                     f"sandbox: {config.codex_sandbox}",
                     f"require_prefix: {config.require_codex_prefix}",
+                    f"persona_enabled: {config.persona_enabled}",
+                    f"memory_enabled: {config.memory_enabled}",
                 ]
             ),
         )
@@ -436,6 +478,34 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
     if command == "/stop":
         send_message(config, chat_id, "当前 Codex Telegram bridge 已停止。")
         raise StopBridge()
+    if command == "/persona":
+        if body:
+            try:
+                write_persona(config, body)
+            except Exception as exc:
+                send_message(config, chat_id, f"人设写入失败：{exc}")
+                return
+            send_message(config, chat_id, "人设已更新。")
+            return
+        persona = read_text_file(config.persona_path, max_chars=3000)
+        send_message(config, chat_id, persona or "还没有设置 Telegram persona。用 /persona <内容> 设置。")
+        return
+    if command == "/remember":
+        if not body:
+            send_message(config, chat_id, "记忆内容为空。用 /remember <内容>。")
+            return
+        append_memory_entry(
+            config,
+            text=body,
+            source=sender_label(message),
+            message_id=message.get("message_id"),
+        )
+        send_message(config, chat_id, "已写入长期记忆。")
+        return
+    if command == "/memory":
+        memory = recent_memory(config)
+        send_message(config, chat_id, memory or "还没有长期记忆。用 /remember <内容> 写入。")
+        return
     if command == "/codex":
         prompt = body
     elif command is not None:
@@ -451,6 +521,24 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
         send_message(config, chat_id, "任务内容为空。")
         return
 
+    memory_text = explicit_memory_text(prompt)
+    if memory_text:
+        append_inbox_event(
+            config,
+            direction="in",
+            text=prompt,
+            sender=sender_label(message),
+            message_id=message.get("message_id"),
+        )
+        append_memory_entry(
+            config,
+            text=memory_text,
+            source=sender_label(message),
+            message_id=message.get("message_id"),
+        )
+        send_message(config, chat_id, "已写入长期记忆。")
+        return
+
     print(
         "Accepted Telegram message "
         f"message_id={message.get('message_id')} "
@@ -459,13 +547,6 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
         flush=True,
     )
     append_inbox_event(
-        config,
-        direction="in",
-        text=prompt,
-        sender=sender_label(message),
-        message_id=message.get("message_id"),
-    )
-    append_memory_event(
         config,
         direction="in",
         text=prompt,
@@ -486,13 +567,6 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
         sender="Codex",
         message_id=message.get("message_id"),
     )
-    append_memory_event(
-        config,
-        direction="out",
-        text=reply,
-        sender="Codex",
-        message_id=message.get("message_id"),
-    )
     send_message(config, chat_id, reply)
 
 
@@ -506,7 +580,7 @@ def codex_prompt(config: Config, prompt: str, sender: str) -> str:
 
     memory = recent_memory(config)
     if memory:
-        parts.extend(["Recent Telegram memory:", memory, ""])
+        parts.extend(["Persistent Telegram memory:", memory, ""])
 
     parts.append(
         "(Bridge note: reply compactly for Telegram. Follow the persistent persona if provided. "
