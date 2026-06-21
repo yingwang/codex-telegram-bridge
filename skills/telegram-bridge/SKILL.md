@@ -35,7 +35,7 @@ Activation performs a Telegram Bot API preflight. If network sandboxing blocks i
 
 If activation says `CODEX_THREAD_ID is missing`, explain that the bridge must be started from inside a Codex CLI session. Do not fall back to `--last` or a generic session.
 
-If another session already owns the bridge, do not replace it silently. Ask before stopping it.
+If another session already owns the bridge, `activate_current_session.sh` may replace it automatically when `TELEGRAM_REPLACE_EXISTING=1` is set in `~/.codex/channels/telegram/.env`. If that flag is not enabled and activation refuses, explain the refusal and ask before stopping the old bridge.
 
 ## Receive
 

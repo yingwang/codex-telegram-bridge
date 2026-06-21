@@ -95,6 +95,7 @@ CODEX_BIN=codex
 CODEX_SANDBOX=workspace-write
 CODEX_TIMEOUT_SECONDS=1200
 TELEGRAM_REQUIRE_CODEX_PREFIX=0
+TELEGRAM_REPLACE_EXISTING=1
 TELEGRAM_INBOX_ENABLED=1
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
@@ -130,6 +131,8 @@ Use this from inside a Codex CLI session. It binds Telegram to that session's ex
 This is the closest practical equivalent to a Claude Code-style channel bridge for Codex. It does not install a service, does not use LaunchAgent, and does not open a port. Stop it with `./scripts/deactivate.sh` or `/stop` from Telegram.
 
 This requires `CODEX_THREAD_ID` to be present. If the script is launched from an ordinary terminal, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
+
+If `TELEGRAM_REPLACE_EXISTING=1`, activating from a new Codex session automatically stops the previous bridge PID recorded in `current-session.json` and binds Telegram to the new `CODEX_THREAD_ID`. If it is unset or `0`, activation refuses to replace another live session and tells you to stop it first.
 
 ### Current Session, Foreground
 
