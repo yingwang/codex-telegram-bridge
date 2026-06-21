@@ -71,6 +71,7 @@ class Config:
     memory_jsonl_path: Path
     memory_recent_events: int
     memory_max_chars: int
+    ack_message: str
 
 
 def load_dotenv(path: Path) -> None:
@@ -129,6 +130,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
     memory_jsonl_path = Path(os.environ.get("TELEGRAM_MEMORY_JSONL_PATH", str(DEFAULT_MEMORY_JSONL_PATH))).expanduser()
     memory_recent_events = int(os.environ.get("TELEGRAM_MEMORY_RECENT_EVENTS", "12"))
     memory_max_chars = int(os.environ.get("TELEGRAM_MEMORY_MAX_CHARS", "8000"))
+    ack_message = os.environ.get("TELEGRAM_ACK_MESSAGE", "看到了。").strip()
 
     return Config(
         token=token,
@@ -151,6 +153,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         memory_jsonl_path=memory_jsonl_path,
         memory_recent_events=memory_recent_events,
         memory_max_chars=memory_max_chars,
+        ack_message=ack_message,
     )
 
 
@@ -615,7 +618,8 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
         sender=sender_label(message),
         message_id=message.get("message_id"),
     )
-    send_message(config, chat_id, "收到，Codex 正在处理。")
+    if config.ack_message:
+        send_message(config, chat_id, config.ack_message)
     try:
         reply = run_codex(config, prompt, sender=sender_label(message))
         reply, memory_items = extract_memory_directive(reply)

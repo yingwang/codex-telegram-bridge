@@ -96,6 +96,7 @@ CODEX_SANDBOX=workspace-write
 CODEX_TIMEOUT_SECONDS=1200
 TELEGRAM_REQUIRE_CODEX_PREFIX=0
 TELEGRAM_REPLACE_EXISTING=1
+TELEGRAM_ACK_MESSAGE=
 TELEGRAM_INBOX_ENABLED=1
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
@@ -133,6 +134,8 @@ This is the closest practical equivalent to a Claude Code-style channel bridge f
 This requires `CODEX_THREAD_ID` to be present. If the script is launched from an ordinary terminal, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
 
 If `TELEGRAM_REPLACE_EXISTING=1`, activating from a new Codex session automatically stops the previous bridge PID recorded in `current-session.json` and binds Telegram to the new `CODEX_THREAD_ID`. If it is unset or `0`, activation refuses to replace another live session and tells you to stop it first.
+
+`TELEGRAM_ACK_MESSAGE` controls the immediate acknowledgement sent before Codex finishes. Set it to an empty value to disable the acknowledgement.
 
 ### Current Session, Foreground
 
