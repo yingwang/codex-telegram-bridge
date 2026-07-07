@@ -80,8 +80,16 @@ TTS_VOICE_PREFIXES = (
     "语音回复:",
     "用语音回复：",
     "用语音回复:",
+    "回复语音：",
+    "回复语音:",
     "回语音：",
     "回语音:",
+    "发语音：",
+    "发语音:",
+    "发个语音：",
+    "发个语音:",
+    "发条语音：",
+    "发条语音:",
     "voice:",
     "voice reply:",
 )
@@ -97,8 +105,22 @@ TTS_TEXT_PREFIXES = (
     "text:",
     "text reply:",
 )
-TTS_VOICE_HINTS = ("语音回复", "用语音回", "回语音", "voice reply", "reply with voice")
-TTS_TEXT_HINTS = ("只回文字", "不要语音", "不用语音", "text only")
+TTS_VOICE_HINTS = (
+    "语音回复",
+    "回复语音",
+    "用语音回",
+    "语音回我",
+    "回语音",
+    "发语音",
+    "发个语音",
+    "发条语音",
+    "用声音回",
+    "声音回复",
+    "voice reply",
+    "reply with voice",
+    "reply in voice",
+)
+TTS_TEXT_HINTS = ("只回文字", "不要语音", "不用语音", "文字就行", "别发语音", "text only")
 
 
 class BridgeError(RuntimeError):
@@ -1412,6 +1434,14 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
                 send_message(config, chat_id, f"附件处理失败：{exc}")
                 return
         inbound_audio = any(item.kind == "audio" for item in downloaded)
+        if tts_preference is None:
+            for item in downloaded:
+                if item.kind != "audio" or not item.transcript:
+                    continue
+                _transcript_text, transcript_tts_preference = extract_tts_preference(item.transcript)
+                if transcript_tts_preference is not None:
+                    tts_preference = transcript_tts_preference
+                    break
 
         print(
             "Accepted Telegram message "

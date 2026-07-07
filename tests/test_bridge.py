@@ -295,6 +295,10 @@ class TtsTests(unittest.TestCase):
         self.assertEqual(prompt, "讲一下今天安排")
         self.assertIs(preference, False)
 
+        prompt, preference = bridge.extract_tts_preference("please reply in voice")
+        self.assertEqual(prompt, "please reply in voice")
+        self.assertIs(preference, True)
+
     def test_tts_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = make_config(Path(temp_dir))
@@ -604,6 +608,76 @@ class HandleUpdateTests(unittest.TestCase):
                             bridge.handle_update(config, update)
 
             self.assertTrue(any(call.args[2] == "今天安排好了。" for call in send_message.mock_calls))
+            send_audio.assert_called_once()
+
+    def test_voice_transcript_can_request_tts_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = make_config(root)
+            config.audio_transcribe_command = "transcribe {audio}"
+            config.tts_mode = "on_demand"
+            config.tts_command = "tts --input {input} --output {output}"
+            update = {
+                "message": {
+                    "message_id": 26,
+                    "chat": {"id": 123},
+                    "from": {"id": 123, "first_name": "Tester"},
+                    "voice": {
+                        "file_id": "voice-id",
+                        "mime_type": "audio/ogg",
+                        "file_size": 10,
+                    },
+                }
+            }
+
+            def fake_download(
+                _config: bridge.Config,
+                attachment: bridge.IncomingAttachment,
+                incoming_dir: Path,
+            ) -> bridge.DownloadedAttachment:
+                path = incoming_dir / attachment.filename
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"voice")
+                return bridge.DownloadedAttachment(
+                    kind="audio",
+                    path=path,
+                    filename=path.name,
+                    mime_type="audio/ogg",
+                    file_size=5,
+                )
+
+            def fake_transcribe(
+                _config: bridge.Config,
+                attachment: bridge.DownloadedAttachment,
+            ) -> bridge.DownloadedAttachment:
+                return bridge.DownloadedAttachment(
+                    attachment.kind,
+                    attachment.path,
+                    attachment.filename,
+                    attachment.mime_type,
+                    attachment.file_size,
+                    transcript="你用语音回复呀",
+                )
+
+            def fake_synthesize(
+                _config: bridge.Config,
+                reply: str,
+                output_dir: Path,
+            ) -> Path:
+                self.assertEqual(reply, "好。")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                audio = output_dir / "reply.mp3"
+                audio.write_bytes(b"mp3")
+                return audio
+
+            with mock.patch.object(bridge, "download_attachment", side_effect=fake_download):
+                with mock.patch.object(bridge, "transcribe_audio_attachment", side_effect=fake_transcribe):
+                    with mock.patch.object(bridge, "run_codex", return_value="好。"):
+                        with mock.patch.object(bridge, "send_message"):
+                            with mock.patch.object(bridge, "synthesize_tts", side_effect=fake_synthesize):
+                                with mock.patch.object(bridge, "send_audio_reply", return_value="audio") as send_audio:
+                                    bridge.handle_update(config, update)
+
             send_audio.assert_called_once()
 
     def test_text_command_suppresses_mirror_tts(self) -> None:
