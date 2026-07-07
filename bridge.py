@@ -119,11 +119,26 @@ TTS_VOICE_HINTS = (
     "发条语音",
     "用声音回",
     "声音回复",
+    "牛与鹰回复",
+    "与鹰回复",
     "voice reply",
     "reply with voice",
     "reply in voice",
 )
 TTS_TEXT_HINTS = ("只回文字", "不要语音", "不用语音", "文字就行", "别发语音", "text only")
+TTS_DETECTION_TRANSLATION = str.maketrans(
+    {
+        "語": "语",
+        "聲": "声",
+        "發": "发",
+        "個": "个",
+        "條": "条",
+        "別": "别",
+        "與": "与",
+        "鷹": "鹰",
+        "覆": "复",
+    }
+)
 
 
 class BridgeError(RuntimeError):
@@ -871,12 +886,15 @@ def transcribe_audio_attachment(config: Config, attachment: DownloadedAttachment
 
 def strip_tts_prefix(prompt: str, prefixes: tuple[str, ...]) -> tuple[str, bool]:
     stripped = prompt.strip()
-    lowered = stripped.lower()
+    normalized = normalize_tts_detection_text(stripped)
     for prefix in prefixes:
-        candidate = lowered if prefix.isascii() else stripped
-        if candidate.startswith(prefix):
+        if normalized.startswith(normalize_tts_detection_text(prefix)):
             return stripped[len(prefix):].strip(), True
     return prompt, False
+
+
+def normalize_tts_detection_text(text: str) -> str:
+    return text.translate(TTS_DETECTION_TRANSLATION).lower()
 
 
 def extract_tts_preference(prompt: str) -> tuple[str, bool | None]:
@@ -888,14 +906,10 @@ def extract_tts_preference(prompt: str) -> tuple[str, bool | None]:
     if has_voice_prefix:
         return without_voice_prefix, True
 
-    lowered = prompt.lower()
-    if any(hint in prompt for hint in TTS_TEXT_HINTS if not hint.isascii()) or any(
-        hint in lowered for hint in TTS_TEXT_HINTS if hint.isascii()
-    ):
+    normalized = normalize_tts_detection_text(prompt)
+    if any(normalize_tts_detection_text(hint) in normalized for hint in TTS_TEXT_HINTS):
         return prompt, False
-    if any(hint in prompt for hint in TTS_VOICE_HINTS if not hint.isascii()) or any(
-        hint in lowered for hint in TTS_VOICE_HINTS if hint.isascii()
-    ):
+    if any(normalize_tts_detection_text(hint) in normalized for hint in TTS_VOICE_HINTS):
         return prompt, True
     return prompt, None
 

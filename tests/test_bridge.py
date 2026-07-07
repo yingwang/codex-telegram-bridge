@@ -342,6 +342,19 @@ class TtsTests(unittest.TestCase):
         self.assertEqual(prompt, "please reply in voice")
         self.assertIs(preference, True)
 
+    def test_extracts_tts_preference_from_traditional_chinese_transcripts(self) -> None:
+        prompt, preference = bridge.extract_tts_preference("語音回覆：講一下今天安排")
+        self.assertEqual(prompt, "講一下今天安排")
+        self.assertIs(preference, True)
+
+        prompt, preference = bridge.extract_tts_preference("不要語音，文字就行")
+        self.assertEqual(prompt, "不要語音，文字就行")
+        self.assertIs(preference, False)
+
+        prompt, preference = bridge.extract_tts_preference("寶寶牛與鷹回覆")
+        self.assertEqual(prompt, "寶寶牛與鷹回覆")
+        self.assertIs(preference, True)
+
     def test_tts_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = make_config(Path(temp_dir))
