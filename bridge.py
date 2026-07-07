@@ -40,6 +40,22 @@ DEFAULT_TTS_MAX_CHARS = 1200
 DEFAULT_TTS_OUTPUT_EXTENSION = ".mp3"
 TELEGRAM_TRANSIENT_ATTEMPTS = 3
 TELEGRAM_RETRY_BASE_DELAY_SECONDS = 0.4
+TTS_FLAT_PUNCTUATION_TRANSLATION = str.maketrans(
+    {
+        "\r": "。",
+        "\n": "。",
+        "\t": " ",
+        "!": "。",
+        "！": "。",
+        "?": "。",
+        "？": "。",
+        ";": "，",
+        "；": "，",
+        ":": "，",
+        "：": "，",
+        "…": "。",
+    }
+)
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 SUPPORTED_DOCUMENT_EXTENSIONS = {".md", ".markdown", ".pdf"}
 SUPPORTED_IMAGE_MIME_EXTENSIONS = {
@@ -240,6 +256,7 @@ class Config:
     tts_max_chars: int
     tts_output_extension: str
     tts_send_as: str
+    tts_flatten_punctuation: bool
 
 
 def load_dotenv(path: Path) -> None:
@@ -339,6 +356,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         TTS_SEND_AS_VALUES,
         "TELEGRAM_TTS_SEND_AS",
     )
+    tts_flatten_punctuation = parse_bool(os.environ.get("TELEGRAM_TTS_FLATTEN_PUNCTUATION"), default=False)
     if max_download_bytes <= 0 or max_upload_bytes <= 0:
         raise BridgeError("Telegram attachment byte limits must be positive")
     if max_artifact_files < 0:
@@ -387,6 +405,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         tts_max_chars=tts_max_chars,
         tts_output_extension=tts_output_extension,
         tts_send_as=tts_send_as,
+        tts_flatten_punctuation=tts_flatten_punctuation,
     )
 
 
@@ -933,11 +952,23 @@ def should_send_tts(
     return False
 
 
+def flatten_tts_punctuation(text: str) -> str:
+    flattened = text.translate(TTS_FLAT_PUNCTUATION_TRANSLATION)
+    flattened = re.sub(r"\.{3,}", "。", flattened)
+    flattened = re.sub(r"[。．.]{2,}", "。", flattened)
+    flattened = re.sub(r"[，,、]{2,}", "，", flattened)
+    flattened = re.sub(r"\s+", " ", flattened)
+    flattened = re.sub(r"\s*([。，,.])\s*", r"\1", flattened)
+    return flattened.strip()
+
+
 def tts_text_for_reply(config: Config, reply: str) -> str:
     text = reply.strip()
-    if len(text) <= config.tts_max_chars:
-        return text
-    return text[:config.tts_max_chars].rstrip() + "\n后面内容较长，请看文字。"
+    if len(text) > config.tts_max_chars:
+        text = text[: config.tts_max_chars].rstrip() + "\n后面内容较长，请看文字。"
+    if config.tts_flatten_punctuation:
+        text = flatten_tts_punctuation(text)
+    return text
 
 
 def tts_args(config: Config, input_path: Path, output_path: Path, text: str) -> list[str]:
@@ -1376,6 +1407,7 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
                     f"tts_mode: {config.tts_mode}",
                     f"tts_configured: {bool(config.tts_command)}",
                     f"tts_send_as: {config.tts_send_as}",
+                    f"tts_flatten_punctuation: {config.tts_flatten_punctuation}",
                     f"max_download_bytes: {config.max_download_bytes}",
                     f"max_upload_bytes: {config.max_upload_bytes}",
                 ]

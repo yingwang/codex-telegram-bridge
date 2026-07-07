@@ -45,6 +45,7 @@ def make_config(root: Path) -> bridge.Config:
         tts_max_chars=1200,
         tts_output_extension=".mp3",
         tts_send_as="audio",
+        tts_flatten_punctuation=False,
     )
 
 
@@ -394,6 +395,14 @@ class TtsTests(unittest.TestCase):
 
             self.assertEqual(output.name, "reply.mp3")
             self.assertEqual((root / "tts" / "reply.txt").read_text(encoding="utf-8"), "你好")
+
+    def test_tts_text_can_flatten_punctuation_for_less_prosody(self) -> None:
+        config = make_config(Path("/tmp"))
+        config.tts_flatten_punctuation = True
+
+        text = bridge.tts_text_for_reply(config, "宝宝！你来了？\n慢一点……我在。")
+
+        self.assertEqual(text, "宝宝。你来了。慢一点。我在。")
 
 
 class CodexInvocationTests(unittest.TestCase):
