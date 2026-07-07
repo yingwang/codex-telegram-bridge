@@ -39,9 +39,9 @@ If another session already owns the bridge, `activate_current_session.sh` may re
 
 ## Receive
 
-Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled.
+Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled. If TTS is configured, `/voice <task>` and `/both <task>` request text plus audio, while `/text <task>` forces a text-only reply.
 
-The bridge accepts Telegram photos, image documents (`.jpg`, `.jpeg`, `.png`, `.webp`), Markdown (`.md`, `.markdown`), and PDF files. The caption is the task. In prefix mode, the caption must begin with `/codex`. Incoming files live only in a private per-request directory under `CODEX_WORKDIR` and are deleted after processing.
+The bridge accepts Telegram photos, image documents (`.jpg`, `.jpeg`, `.png`, `.webp`), Markdown (`.md`, `.markdown`), PDF files, and voice/audio messages when `TELEGRAM_AUDIO_TRANSCRIBE_COMMAND` is configured. The caption is the task. In prefix mode, the caption must begin with `/codex`. Incoming files live only in a private per-request directory under `CODEX_WORKDIR` and are deleted after processing.
 
 The bridge may inject a local persistent persona and recent selective memory on each Telegram-triggered `codex exec` call. By default these live outside the repository:
 
@@ -73,9 +73,14 @@ Supported bot commands:
 /remember
 /memory
 /codex <task>
+/voice <task>
+/text <task>
+/both <task>
 ```
 
-Voice, audio, video, stickers, archives, and other attachment types are not supported.
+Voice and audio are transcribed locally before Codex receives the prompt. Video, stickers, archives, and other attachment types are not supported.
+
+If `TELEGRAM_TTS_MODE` and `TELEGRAM_TTS_COMMAND` are configured, the bridge can synthesize Codex replies through a replaceable local TTS command and send them with Telegram `sendAudio` or `sendVoice`. Text is always sent first; TTS failure should not block text replies.
 
 Codex can return generated images, Markdown, and PDF files. It must write them to the exact per-request artifacts directory included in the bridge prompt and append a `<telegram_attachments>` JSON block. The bridge validates that each path remains inside that directory before uploading it.
 

@@ -12,7 +12,7 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Incoming Telegram messages bind to the current Codex thread only when started with a current-session script such as `./scripts/activate_current_session.sh` or `./scripts/run_current_session.sh`.
 - The bridge never uses `codex exec resume --last`; it uses the explicit `CODEX_THREAD_ID` from the current Codex CLI session.
 - The bridge runs `codex exec` with `--sandbox workspace-write`.
-- Incoming images, Markdown, and PDF files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
+- Incoming images, Markdown, PDF files, and configured voice/audio files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
 - Codex can return only supported files created inside that request's dedicated `artifacts/` directory. Absolute paths, `..` escapes, symlinks, unsupported extensions, oversized files, and excess file counts are rejected.
 - Telegram bot chats are not end-to-end encrypted. Do not send passwords, API keys, private keys, or signing secrets through Telegram.
 - Keep `CODEX_WORKDIR` narrow. The bridge defaults to the directory it is launched from if `CODEX_WORKDIR` is not set.
@@ -119,6 +119,13 @@ TELEGRAM_ATTACHMENTS_ENABLED=1
 TELEGRAM_MAX_DOWNLOAD_BYTES=20971520
 TELEGRAM_MAX_UPLOAD_BYTES=20971520
 TELEGRAM_MAX_ARTIFACT_FILES=4
+TELEGRAM_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS=180
+TELEGRAM_AUDIO_TRANSCRIPT_MAX_CHARS=12000
+TELEGRAM_TTS_MODE=off
+TELEGRAM_TTS_TIMEOUT_SECONDS=120
+TELEGRAM_TTS_MAX_CHARS=1200
+TELEGRAM_TTS_OUTPUT_EXTENSION=mp3
+TELEGRAM_TTS_SEND_AS=audio
 TELEGRAM_INBOX_ENABLED=1
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
@@ -191,9 +198,65 @@ The bridge accepts these Telegram attachments:
 Images:   .jpg, .jpeg, .png, .webp
 Text:     .md, .markdown
 Document: .pdf
+Audio:    Telegram voice notes and audio messages, when local transcription is configured
 ```
 
 For images, the bridge downloads the largest Telegram photo variant and passes it to Codex with `codex exec --image`. Images sent as Telegram documents are also supported. Markdown and PDF files are downloaded and exposed to Codex as local paths in the prompt.
+
+For Telegram voice notes or audio messages, install the standalone local transcriber from `cc-telegram-voice` first. That repository was originally packaged for Claude Code, but this bridge uses only its generic `transcribe.py` CLI and does not read or write any Claude Code files:
+
+```bash
+git clone https://github.com/yingwang/cc-telegram-voice.git
+cd cc-telegram-voice
+./setup.sh
+```
+
+Then point the bridge at it in `~/.codex/channels/telegram/.env`:
+
+```bash
+TELEGRAM_AUDIO_TRANSCRIBE_COMMAND="/absolute/path/to/cc-telegram-voice/.venv/bin/python /absolute/path/to/cc-telegram-voice/transcribe.py {audio} --lang zh"
+TELEGRAM_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS=180
+TELEGRAM_AUDIO_TRANSCRIPT_MAX_CHARS=12000
+```
+
+The bridge downloads the audio into the private request directory, runs the configured command locally, and includes the transcript in the Codex prompt. If the command includes `{audio}`, that placeholder is replaced with the downloaded file path; otherwise the path is appended as the final argument. The command is run without a shell.
+
+## Voice Replies
+
+The bridge can also synthesize Codex replies and send them back as Telegram audio. This logic lives in `codex-telegram-bridge`; the TTS engine itself is an external command so it can be replaced without changing the Telegram bridge.
+
+Configure a TTS command in `~/.codex/channels/telegram/.env`. For the same `edge-tts` style used by `yilu-ting`, with a Chinese male voice:
+
+```bash
+TELEGRAM_TTS_MODE=on_demand
+TELEGRAM_TTS_COMMAND="edge-tts --voice zh-CN-YunxiNeural --rate=-8% --file {input} --write-media {output}"
+TELEGRAM_TTS_TIMEOUT_SECONDS=120
+TELEGRAM_TTS_MAX_CHARS=1200
+TELEGRAM_TTS_OUTPUT_EXTENSION=mp3
+TELEGRAM_TTS_SEND_AS=audio
+```
+
+`TELEGRAM_TTS_COMMAND` must include `{output}` and either `{input}` or `{text}`. The bridge writes the reply text to `{input}`, expects the command to create `{output}`, sends the result to Telegram, and deletes the temporary directory after the request.
+
+Control the reply format from Telegram:
+
+```text
+普通消息                 -> 按 TELEGRAM_TTS_MODE 决定，on_demand 下只回文字
+/voice 任务              -> 回文字并追加语音
+/both 任务               -> 回文字并追加语音
+/text 任务               -> 只回文字
+语音回复：任务            -> 回文字并追加语音
+只回文字：任务            -> 只回文字
+```
+
+TTS modes:
+
+```text
+off       never send synthesized audio
+on_demand send audio only for /voice, /both, or messages asking for 语音回复
+mirror    send audio for inbound voice/audio unless the user asks for text
+always    send audio for every reply unless the user asks for text
+```
 
 The message caption is used as the task:
 
@@ -230,6 +293,15 @@ TELEGRAM_ATTACHMENTS_ENABLED=1
 TELEGRAM_MAX_DOWNLOAD_BYTES=20971520
 TELEGRAM_MAX_UPLOAD_BYTES=20971520
 TELEGRAM_MAX_ARTIFACT_FILES=4
+TELEGRAM_AUDIO_TRANSCRIBE_COMMAND=
+TELEGRAM_AUDIO_TRANSCRIBE_TIMEOUT_SECONDS=180
+TELEGRAM_AUDIO_TRANSCRIPT_MAX_CHARS=12000
+TELEGRAM_TTS_MODE=off
+TELEGRAM_TTS_COMMAND=
+TELEGRAM_TTS_TIMEOUT_SECONDS=120
+TELEGRAM_TTS_MAX_CHARS=1200
+TELEGRAM_TTS_OUTPUT_EXTENSION=mp3
+TELEGRAM_TTS_SEND_AS=audio
 ```
 
 The defaults are intentionally conservative. Telegram metadata and filename extensions are treated as hints, not permission to execute a file.
