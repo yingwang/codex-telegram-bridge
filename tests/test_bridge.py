@@ -252,6 +252,49 @@ class UploadTests(unittest.TestCase):
             send_document.assert_called_once_with(config, "123", image, "")
 
 
+class TelegramDownloadRetryTests(unittest.TestCase):
+    def test_download_retries_transient_get_file_network_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = make_config(root)
+            destination = root / "incoming" / "voice.oga"
+            calls = 0
+
+            class FakeResponse:
+                def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
+                    self.body = body
+                    self.headers = headers or {}
+
+                def __enter__(self) -> "FakeResponse":
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    return None
+
+                def read(self, *_args: object) -> bytes:
+                    return self.body
+
+            def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise bridge.urllib.error.URLError(
+                        ConnectionResetError(54, "Connection reset by peer")
+                    )
+                if calls == 2:
+                    return FakeResponse(b'{"ok":true,"result":{"file_path":"voice/file.oga"}}')
+                return FakeResponse(b"audio", {"Content-Length": "5"})
+
+            with mock.patch.object(bridge.time, "sleep") as sleep:
+                with mock.patch.object(bridge.urllib.request, "urlopen", side_effect=fake_urlopen):
+                    size = bridge.download_telegram_file(config, "voice-id", destination)
+
+            self.assertEqual(size, 5)
+            self.assertEqual(destination.read_bytes(), b"audio")
+            self.assertEqual(calls, 3)
+            sleep.assert_called_once()
+
+
 class AudioTranscriptionTests(unittest.TestCase):
     def test_transcribe_command_appends_audio_path_without_shell(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

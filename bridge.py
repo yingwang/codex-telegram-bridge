@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import mimetypes
 import os
@@ -37,6 +38,8 @@ DEFAULT_AUDIO_TRANSCRIPT_MAX_CHARS = 12000
 DEFAULT_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_TTS_MAX_CHARS = 1200
 DEFAULT_TTS_OUTPUT_EXTENSION = ".mp3"
+TELEGRAM_TRANSIENT_ATTEMPTS = 3
+TELEGRAM_RETRY_BASE_DELAY_SECONDS = 0.4
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 SUPPORTED_DOCUMENT_EXTENSIONS = {".md", ".markdown", ".pdf"}
 SUPPORTED_IMAGE_MIME_EXTENSIONS = {
@@ -129,6 +132,35 @@ class BridgeError(RuntimeError):
 
 class StopBridge(Exception):
     pass
+
+
+def is_transient_network_error(exc: BaseException) -> bool:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+        return True
+    if isinstance(reason, OSError):
+        return reason.errno in {
+            errno.ECONNRESET,
+            errno.ETIMEDOUT,
+            errno.ECONNABORTED,
+            errno.EPIPE,
+        }
+    return False
+
+
+def with_transient_retries(operation: Any, *, attempts: int = TELEGRAM_TRANSIENT_ATTEMPTS) -> Any:
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return operation()
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, OSError) as exc:
+            last_exc = exc
+            if attempt + 1 >= attempts or not is_transient_network_error(exc):
+                raise
+            time.sleep(TELEGRAM_RETRY_BASE_DELAY_SECONDS * (2**attempt))
+    raise last_exc or BridgeError("Telegram request failed")
 
 
 @dataclass(frozen=True)
@@ -343,7 +375,14 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
     )
 
 
-def api_call(config: Config, method: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> Any:
+def api_call(
+    config: Config,
+    method: str,
+    payload: dict[str, Any] | None = None,
+    timeout: int = 30,
+    *,
+    attempts: int = 1,
+) -> Any:
     url = f"https://api.telegram.org/bot{config.token}/{method}"
     body = None
     headers = {}
@@ -352,9 +391,12 @@ def api_call(config: Config, method: str, payload: dict[str, Any] | None = None,
         headers["Content-Type"] = "application/json"
 
     request = urllib.request.Request(url, data=body, headers=headers)
-    try:
+    def read_response() -> Any:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        data = with_transient_retries(read_response, attempts=attempts)
     except urllib.error.HTTPError as exc:
         try:
             details = exc.read().decode("utf-8")
@@ -363,6 +405,8 @@ def api_call(config: Config, method: str, payload: dict[str, Any] | None = None,
         raise BridgeError(f"Telegram API HTTP {exc.code}: {details}") from exc
     except urllib.error.URLError as exc:
         raise BridgeError(f"Telegram API network error: {exc.reason}") from exc
+    except OSError as exc:
+        raise BridgeError(f"Telegram API network error: {exc}") from exc
 
     if not data.get("ok"):
         raise BridgeError(f"Telegram API error for {method}: {data}")
@@ -429,24 +473,35 @@ def api_call_multipart(
 
 
 def download_telegram_file(config: Config, file_id: str, destination: Path) -> int:
-    info = api_call(config, "getFile", {"file_id": file_id}, timeout=30)
+    info = api_call(
+        config,
+        "getFile",
+        {"file_id": file_id},
+        timeout=30,
+        attempts=TELEGRAM_TRANSIENT_ATTEMPTS,
+    )
     remote_path = str((info or {}).get("file_path") or "").strip()
     if not remote_path:
         raise BridgeError("Telegram getFile returned no file_path")
 
     request = urllib.request.Request(f"https://api.telegram.org/file/bot{config.token}/{remote_path}")
-    try:
+    def read_file() -> bytes:
         with urllib.request.urlopen(request, timeout=60) as response:
             declared_size = response.headers.get("Content-Length")
             if declared_size and int(declared_size) > config.max_download_bytes:
                 raise BridgeError(
                     f"Attachment is too large ({declared_size} bytes; limit {config.max_download_bytes})"
                 )
-            data = response.read(config.max_download_bytes + 1)
+            return response.read(config.max_download_bytes + 1)
+
+    try:
+        data = with_transient_retries(read_file, attempts=TELEGRAM_TRANSIENT_ATTEMPTS)
     except urllib.error.HTTPError as exc:
         raise BridgeError(f"Telegram file download HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise BridgeError(f"Telegram file download error: {exc.reason}") from exc
+    except OSError as exc:
+        raise BridgeError(f"Telegram file download error: {exc}") from exc
 
     if len(data) > config.max_download_bytes:
         raise BridgeError(
