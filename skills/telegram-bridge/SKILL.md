@@ -1,6 +1,6 @@
 ---
 name: telegram-bridge
-description: Activate, monitor, stop, or use the private Telegram bridge for the current Codex CLI session. Use when the user asks to enable Telegram for Codex, receive Telegram messages in the current session, send Telegram messages from Codex, check bridge status, stop the bridge, or compare the Codex bridge with Claude Code's Telegram channel without modifying Claude Code.
+description: Activate, monitor, stop, or use the private Telegram bridge for the current Codex CLI session. Use when the user asks to enable Telegram for Codex, receive Telegram text, images, Markdown, PDFs, voice notes, or audio in the current session, send Telegram messages/files/optional TTS audio from Codex, check bridge status, stop the bridge, or compare the Codex bridge with Claude Code's Telegram channel without modifying Claude Code.
 ---
 
 # Telegram Bridge
@@ -39,9 +39,11 @@ If another session already owns the bridge, `activate_current_session.sh` may re
 
 ## Receive
 
-Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled. If TTS is configured, `/voice <task>` and `/both <task>` request text plus audio, while `/text <task>` forces a text-only reply.
+Once active, receiving is automatic. The bridge polls Telegram and replies with Codex's final message. Tell the user they can send normal text to the bot, or `/codex <task>` if prefix mode is enabled.
 
-The bridge accepts Telegram photos, image documents (`.jpg`, `.jpeg`, `.png`, `.webp`), Markdown (`.md`, `.markdown`), PDF files, and voice/audio messages when `TELEGRAM_AUDIO_TRANSCRIBE_COMMAND` is configured. The caption is the task. In prefix mode, the caption must begin with `/codex`. Incoming files live only in a private per-request directory under `CODEX_WORKDIR` and are deleted after processing.
+The bridge accepts Telegram photos, image documents (`.jpg`, `.jpeg`, `.png`, `.webp`), Markdown (`.md`, `.markdown`), PDF files, and voice/audio messages when `TELEGRAM_AUDIO_TRANSCRIBE_COMMAND` is configured. The caption is the task. In prefix mode, the caption must begin with `/codex`, `/voice`, `/text`, or `/both`. Incoming files live only in a private per-request directory under `CODEX_WORKDIR` and are deleted after processing.
+
+Voice notes and audio messages are downloaded into the same private request directory, passed to the configured local transcriber, and injected into the Codex prompt as transcripts. A common setup is the generic `cc-telegram-voice/transcribe.py` CLI; use only its local transcription command and do not read or write Claude Code files. If audio arrives without a configured transcriber, the bridge replies with a configuration hint instead of sending unsupported-attachment text.
 
 The bridge may inject a local persistent persona and recent selective memory on each Telegram-triggered `codex exec` call. By default these live outside the repository:
 
@@ -78,11 +80,11 @@ Supported bot commands:
 /both <task>
 ```
 
-Voice and audio are transcribed locally before Codex receives the prompt. Video, stickers, archives, and other attachment types are not supported.
-
-If `TELEGRAM_TTS_MODE` and `TELEGRAM_TTS_COMMAND` are configured, the bridge can synthesize Codex replies through a replaceable local TTS command and send them with Telegram `sendAudio` or `sendVoice`. Text is always sent first; TTS failure should not block text replies.
+Video, stickers, archives, and other attachment types are not supported. Voice notes and audio messages are supported only after local transcription is configured.
 
 Codex can return generated images, Markdown, and PDF files. It must write them to the exact per-request artifacts directory included in the bridge prompt and append a `<telegram_attachments>` JSON block. The bridge validates that each path remains inside that directory before uploading it.
+
+Codex can also return synthesized speech when `TELEGRAM_TTS_COMMAND` is configured. `TELEGRAM_TTS_MODE=on_demand` sends audio for `/voice`, `/both`, or natural requests such as `语音回复` / `reply in voice`; `/text` or natural text-only requests suppress audio. `mirror` sends audio for inbound voice/audio unless suppressed, and `always` sends audio for every reply unless suppressed. TTS may be sent as Telegram `audio` or `voice` according to `TELEGRAM_TTS_SEND_AS`.
 
 ## Send
 

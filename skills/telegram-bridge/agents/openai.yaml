@@ -1,4 +1,4 @@
 interface:
   display_name: "Telegram Bridge"
-  short_description: "Bind Telegram to this Codex session"
-  default_prompt: "Use $telegram-bridge to activate Telegram for this Codex session."
+  short_description: "Use Telegram text, files, voice, and TTS"
+  default_prompt: "Use $telegram-bridge to activate or inspect Telegram text, files, voice, and TTS for this Codex session."
