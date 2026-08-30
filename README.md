@@ -9,8 +9,9 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Use a dedicated Telegram bot token. Do not reuse another assistant's bot token.
 - This bridge does not read or write `~/.claude`, Claude Code plugins, or Claude Code Telegram channel files.
 - Only allow specific Telegram chat IDs with `TELEGRAM_ALLOWED_CHAT_IDS`.
-- Incoming Telegram messages bind to the current Codex thread only when started with a current-session script such as `./scripts/activate_current_session.sh` or `./scripts/run_current_session.sh`.
-- The bridge never uses `codex exec resume --last`; it uses the explicit `CODEX_THREAD_ID` from the current Codex CLI session.
+- Incoming Telegram messages, the 09:00 news brief, and adaptive persona pings run only while at least one interactive Codex CLI session is alive. A locked private registry selects one exact thread as the sticky leader and fails over only when that owner ends.
+- The bridge never uses `codex exec resume --last`; it forks the explicit `CODEX_THREAD_ID` from the current Codex CLI session with `codex exec fork --ephemeral`, preserving context without competing for the live thread's writer lock.
+- Scheduler-driven child turns disable lifecycle hooks and receive a minimal environment, so they cannot recursively start companions or inherit the Telegram token through the process environment.
 - The bridge runs `codex exec` with `--sandbox workspace-write`.
 - Incoming images, Markdown, PDF files, and configured voice/audio files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
 - Codex can return only supported files created inside that request's dedicated `artifacts/` directory. Absolute paths, `..` escapes, symlinks, unsupported extensions, oversized files, and excess file counts are rejected.
@@ -39,15 +40,17 @@ flowchart TD
 
   env[Private config<br/>~/.codex/channels/telegram/.env] --> bridge
   state[Runtime state<br/>~/.codex/channels/telegram/] <--> bridge
+  registry[Live Codex session leases] <--> bridge
 
+  bridge --> timers[Session-scoped news and ping timers]
   bridge --> gate{Allowed chat ID?}
   gate -->|No| reject[Ignore or reply with /id in discovery mode]
   gate -->|Yes| mode{Run mode}
 
-  mode -->|Current session| resume[codex exec resume<br/>&lt;CODEX_THREAD_ID&gt;]
+  mode -->|Current session| fork[codex exec fork --ephemeral<br/>&lt;CODEX_THREAD_ID&gt;]
   mode -->|Manual mode| exec[codex exec<br/>-C CODEX_WORKDIR]
 
-  resume --> codex[Codex]
+  fork --> codex[Codex]
   exec --> codex
   codex --> reply[Final response]
   reply --> bridge
@@ -62,13 +65,16 @@ flowchart TD
   persona[Persistent persona<br/>~/.codex/memories/telegram-persona.md] --> bridge
   memory[Selective memory<br/>~/.codex/memories/telegram-memory.jsonl] <--> bridge
 
-  cli[Codex CLI user] --> activate[activate_current_session.sh]
+  cli[Every interactive Codex CLI] --> activate[SessionStart register]
+  cli --> end[SessionEnd unregister]
   cli --> foreground[run_current_session.sh]
   cli --> manual[run_manual.sh]
   cli --> send[send.sh]
   cli --> stop[deactivate.sh]
 
   activate --> bridge
+  end --> registry
+  timers --> fork
   foreground --> bridge
   manual --> bridge
   send --> bot
@@ -77,7 +83,7 @@ flowchart TD
 
 The bridge is a local Telegram Bot API client. Telegram never connects inbound to your machine; the bridge repeatedly calls `getUpdates`, receives allowed messages, invokes Codex, and sends the final response back with `sendMessage`.
 
-In current-session mode, the bridge does not guess which Codex session to use. It requires `CODEX_THREAD_ID` from the active Codex CLI session and calls `codex exec resume <CODEX_THREAD_ID>`. Manual mode skips session binding and creates a fresh `codex exec` run for each Telegram message.
+In live-session mode, the companion never guesses or uses `--last`. `SessionStart` registers exact thread and owner-process leases; the first live leader stays selected until it ends, then the bridge atomically moves to another verified live lease. Each Telegram or scheduled turn calls `codex exec fork --ephemeral <exact ID>`, so it inherits the selected conversation context without contending for or modifying the active interactive thread. The single bridge loop serializes Telegram replies and scheduled turns. Telegram polling uses one global offset across leader changes, so failover cannot replay old updates.
 
 ## Install
 
@@ -113,7 +119,6 @@ CODEX_BIN=codex
 CODEX_SANDBOX=workspace-write
 CODEX_TIMEOUT_SECONDS=1200
 TELEGRAM_REQUIRE_CODEX_PREFIX=0
-TELEGRAM_REPLACE_EXISTING=1
 TELEGRAM_ACK_MESSAGE=
 TELEGRAM_ATTACHMENTS_ENABLED=1
 TELEGRAM_MAX_DOWNLOAD_BYTES=20971520
@@ -150,28 +155,46 @@ When `TELEGRAM_ALLOWED_CHAT_IDS` is empty, the bridge is in discovery mode. It w
 
 ## Ways to Use
 
-### Current Session, Background
+### Any-live-session Companion
 
 ```bash
 ./scripts/activate_current_session.sh
 ```
 
-Use this from inside a Codex CLI session. It binds Telegram to that session's explicit `CODEX_THREAD_ID`, starts a user-level background long-polling process, and leaves the Codex CLI usable.
+Use this manually from an interactive Codex CLI session for first activation. The lifecycle hooks then register every live interactive Codex session. One bridge process remains active while the registry contains at least one verified owner process; the final `SessionEnd` stops Telegram, news, and persona timers. No LaunchAgent or always-on system service is installed.
 
-To activate it automatically whenever Codex starts or resumes a CLI session, add this user-level hook to `~/.codex/hooks.json`, then review and trust it once with `/hooks`:
+Configure the lifecycle hooks once, then review and trust them with `/hooks`:
+
+```bash
+python3 scripts/configure_session_hooks.py
+```
+
+The installer preserves unrelated hook entries and adds the equivalent of:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",
             "command": "/bin/bash /absolute/path/to/codex-telegram-bridge/scripts/activate_current_session.sh",
             "timeout": 30,
-            "statusMessage": "Starting Telegram bridge"
+            "statusMessage": "Starting session-scoped Telegram companion"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash /absolute/path/to/codex-telegram-bridge/scripts/deactivate_session.sh",
+            "timeout": 3,
+            "statusMessage": "Stopping session-scoped Telegram companion"
           }
         ]
       }
@@ -180,13 +203,13 @@ To activate it automatically whenever Codex starts or resumes a CLI session, add
 }
 ```
 
-Codex supplies the active session ID to lifecycle hooks as `session_id` in the JSON object on standard input. The activation script accepts that hook input as well as the `CODEX_THREAD_ID` environment variable used by manual activation. Hook diagnostics are written privately to `~/.codex/channels/telegram/session-start-hook.log` so they are not injected into the conversation as developer context.
+Codex supplies the exact active session ID to lifecycle hooks as `session_id`. Each start records a lease containing that ID plus the interactive CLI PID and process-start token; PID reuse and stale sessions are pruned. The leader is sticky, so merely opening another session does not steal Telegram. A leader ending causes in-process failover to another live lease, while the final lease ending stops the bridge. Registrations, removals, and startup are locked and idempotent so concurrent CLI windows do not race.
 
-This is the closest practical equivalent to a Claude Code-style channel bridge for Codex. It does not install a service, does not use LaunchAgent, and does not open a port. Stop it with `./scripts/deactivate.sh` or `/stop` from Telegram.
+This is the closest practical equivalent to a Claude Code-style session channel for Codex: keep any Codex CLI session open and the companion stays active; close the last CLI session and everything stops. You can also stop the process explicitly with `./scripts/deactivate.sh` or `/stop`, though a later `SessionStart` will start it again. Codex does not always end a conversation when you merely switch away; an unobserved idle conversation can retain a lease until its documented `SessionEnd` occurs, while an exited CLI process is removed promptly by the PID watchdog.
 
 Manual activation requires `CODEX_THREAD_ID` to be present; SessionStart hooks provide the equivalent `session_id` on standard input. If the script is launched from an ordinary terminal without either value, it exits instead of accidentally using an arbitrary session. Activation checks Telegram Bot API access before starting; if Codex sandboxing blocks network access, rerun the same command with scoped network approval.
 
-If `TELEGRAM_REPLACE_EXISTING=1`, activating from a new Codex session automatically stops the previous bridge PID recorded in `current-session.json` and binds Telegram to the new `CODEX_THREAD_ID`. If it is unset or `0`, activation refuses to replace another live session and tells you to stop it first.
+Live leases are stored privately in `~/.codex/channels/telegram/live-sessions.json`. If two clients open the same thread, their owner leases remain distinct; a delayed `SessionEnd` can therefore remove only its exact owner without stopping the other client.
 
 `TELEGRAM_ACK_MESSAGE` controls the immediate acknowledgement sent before Codex finishes. Set it to an empty value to disable the acknowledgement.
 
@@ -371,6 +394,28 @@ If you installed the prompt, trigger it with:
 /prompts:telegram stop
 /prompts:telegram send message from Codex
 ```
+
+## Session-scoped schedules
+
+The 09:00 Europe/Stockholm Chinese news brief and adaptive persona pings are part of the any-live-session companion process. They are not LaunchAgents, scheduled desktop tasks, or persistent separate Codex sessions. Every due task explicitly creates an ephemeral fork of the current sticky leader, with lifecycle hooks disabled for that child turn, and the bridge handles one turn at a time.
+
+Scheduler state is private and independent from the Telegram polling offset:
+
+```text
+~/.codex/channels/telegram/scheduler/
+```
+
+The news task sends text only and does not create files, commit, or push. It uses a strong one-turn instruction to produce a neutral current-events brief while still preserving the native conversation context around it. Persona pings receive recent Telegram activity and use the same thread to decide whether to send, what to say, and when to check next; silence increases the cooldown and a daily cap prevents repeated messages.
+
+The companion checks timers between Telegram long polls. Closing one session does nothing while another lease remains; closing the final session stops the process, and opening any later Codex CLI session restarts it. A leader switch changes the native thread context, so the bridge also injects the persistent Telegram persona and selective memory on ordinary replies, while scheduler state and Telegram offsets remain global. If the Mac sleeps while a session remains open, the controller can catch up a missed morning brief until the configured cutoff, but it does not replay a backlog of persona messages.
+
+Older versions used `com.ying.codex.telegram.news` and `com.ying.codex.telegram.rp` LaunchAgents. Remove those exact legacy jobs once with:
+
+```bash
+./scripts/remove_legacy_scheduler.sh
+```
+
+This migration does not read or modify Claude Code configuration and preserves the scheduler state used for duplicate prevention and cooldowns.
 
 ## Inbox
 

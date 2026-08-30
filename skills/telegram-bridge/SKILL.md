@@ -1,6 +1,6 @@
 ---
 name: telegram-bridge
-description: Activate, monitor, stop, or use the private Telegram bridge for the current Codex CLI session. Use when the user asks to enable Telegram for Codex, receive Telegram text, images, Markdown, PDFs, voice notes, or audio in the current session, send Telegram messages/files/optional TTS audio from Codex, check bridge status, stop the bridge, or compare the Codex bridge with Claude Code's Telegram channel without modifying Claude Code.
+description: Activate, monitor, stop, or use the private Telegram bridge while any interactive Codex CLI session is alive. Use when the user asks to enable Telegram for Codex, receive Telegram text, images, Markdown, PDFs, voice notes, or audio, send Telegram messages/files/optional TTS audio from Codex, check bridge status, stop the bridge, or compare the Codex bridge with Claude Code's Telegram channel without modifying Claude Code.
 ---
 
 # Telegram Bridge
@@ -11,15 +11,15 @@ Do not read or modify Claude Code Telegram files unless the user explicitly asks
 
 ## Core Model
 
-The bridge is a per-Codex-session long-polling process. It opens no port, creates no webhook, installs no LaunchAgent, and does not run as a system service.
+The bridge is an any-live-Codex-session long-polling process. It opens no port, creates no webhook, installs no LaunchAgent, and does not run as a system service. SessionStart registers exact thread/owner leases; one sticky live leader receives Telegram turns, another verified lease takes over if it ends, and the bridge stops only after the final lease ends.
 
-Activation from a Codex CLI session binds Telegram to the current `CODEX_THREAD_ID`. The bridge sends incoming Telegram messages to:
+Activation from a Codex CLI session registers the current exact `CODEX_THREAD_ID`. The bridge handles each incoming Telegram message with an ephemeral fork of the current verified leader:
 
 ```bash
-codex exec resume <current CODEX_THREAD_ID>
+codex exec fork --ephemeral <current CODEX_THREAD_ID>
 ```
 
-Never use `codex exec resume --last`; it can target the wrong session.
+The fork inherits the exact conversation context without competing for or modifying the interactive thread's active writer. Never use `codex exec resume --last`; it can target the wrong session.
 
 ## Activate
 
@@ -35,7 +35,7 @@ Activation performs a Telegram Bot API preflight. If network sandboxing blocks i
 
 If activation says `CODEX_THREAD_ID is missing`, explain that the bridge must be started from inside a Codex CLI session. Do not fall back to `--last` or a generic session.
 
-If another session already owns the bridge, `activate_current_session.sh` may replace it automatically when `TELEGRAM_REPLACE_EXISTING=1` is set in `~/.codex/channels/telegram/.env`. If that flag is not enabled and activation refuses, explain the refusal and ask before stopping the old bridge.
+Opening another interactive Codex CLI session registers another lease but does not steal the sticky leader. If the leader ends, the bridge moves to a remaining live lease; if the final session ends, it stops. Never use LaunchAgent or a system daemon to keep it alive without a Codex session.
 
 ## Receive
 
