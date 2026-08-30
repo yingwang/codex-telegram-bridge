@@ -26,6 +26,8 @@ def make_config(root: Path) -> bridge.Config:
         inbox_enabled=False,
         inbox_path=root / "inbox.md",
         inbox_jsonl_path=root / "inbox.jsonl",
+        context_recent_events=12,
+        context_max_chars=12000,
         persona_enabled=False,
         persona_path=root / "persona.md",
         memory_enabled=False,
@@ -408,6 +410,36 @@ class TtsTests(unittest.TestCase):
 
 
 class CodexInvocationTests(unittest.TestCase):
+    def test_prompt_injects_only_recent_same_chat_and_excludes_current_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = make_config(root)
+            config.inbox_enabled = True
+            events = [
+                {"ts": "1", "direction": "in", "chat_id": "123", "message_id": "10", "sender": "Ying", "text": "trade"},
+                {"ts": "2", "direction": "out", "chat_id": "123", "message_id": "10", "sender": "Codex", "text": "下一步做 attribution"},
+                {"ts": "3", "direction": "in", "chat_id": "999", "message_id": "11", "sender": "Other", "text": "unrelated secret"},
+                {"ts": "4", "direction": "in", "chat_id": "123", "message_id": "12", "sender": "Ying", "text": "继续"},
+            ]
+            config.inbox_jsonl_path.write_text(
+                "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+                encoding="utf-8",
+            )
+
+            prompt = bridge.codex_prompt(
+                config,
+                "继续",
+                "Ying",
+                chat_id="123",
+                current_message_id="12",
+            )
+
+            self.assertIn("Recent Telegram conversation for this chat", prompt)
+            self.assertIn("trade", prompt)
+            self.assertIn("下一步做 attribution", prompt)
+            self.assertNotIn("unrelated secret", prompt)
+            self.assertEqual(prompt.count("继续"), 1)
+
     def test_fork_invocation_is_ephemeral_disables_hooks_and_sanitizes_child_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -757,8 +789,12 @@ class HandleUpdateTests(unittest.TestCase):
                 sender: str,
                 attachments: list[bridge.DownloadedAttachment],
                 artifacts_dir: Path,
+                chat_id: str,
+                current_message_id: int,
             ) -> str:
                 self.assertEqual(sender, "Tester")
+                self.assertEqual(chat_id, "123")
+                self.assertEqual(current_message_id, 21)
                 self.assertEqual(len(attachments), 1)
                 output = artifacts_dir / "generated.png"
                 output.write_bytes(b"png")
@@ -835,9 +871,13 @@ class HandleUpdateTests(unittest.TestCase):
                 sender: str,
                 attachments: list[bridge.DownloadedAttachment],
                 artifacts_dir: Path,
+                chat_id: str,
+                current_message_id: int,
             ) -> str:
                 self.assertEqual(prompt, "请根据这段语音内容回复。")
                 self.assertEqual(sender, "Tester")
+                self.assertEqual(chat_id, "123")
+                self.assertEqual(current_message_id, 22)
                 self.assertEqual(attachments[0].transcript, "这是一条语音。")
                 self.assertTrue(artifacts_dir.exists())
                 return "收到。"

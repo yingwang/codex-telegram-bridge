@@ -33,6 +33,8 @@ def make_bridge_config(root: Path) -> bridge.Config:
         inbox_enabled=True,
         inbox_path=root / "inbox.md",
         inbox_jsonl_path=root / "inbox.jsonl",
+        context_recent_events=12,
+        context_max_chars=12000,
         persona_enabled=False,
         persona_path=root / "persona.md",
         memory_enabled=False,

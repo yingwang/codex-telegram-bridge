@@ -21,6 +21,8 @@ codex exec fork --ephemeral <current CODEX_THREAD_ID>
 
 The fork inherits the exact conversation context without competing for or modifying the interactive thread's active writer. Never use `codex exec resume --last`; it can target the wrong session.
 
+Each Telegram-triggered fork also receives a bounded recent history from the same Telegram chat. The bridge excludes records from other chats and the current inbound message, which is already present as the prompt. This preserves follow-ups such as “继续” while keeping every execution ephemeral.
+
 ## Activate
 
 When the user asks to activate, enable, start, or connect Telegram for this Codex session:
@@ -62,6 +64,7 @@ python3 scripts/pick_inbox.py --limit 20
 ```
 
 If the script prints unread messages, summarize them briefly and treat the newest Telegram message as relevant context. Do not print secrets.
+If the sandbox cannot write the private inbox directory, the picker uses a private cursor in the system temporary directory and continues instead of replaying everything with an exception.
 
 Supported bot commands:
 

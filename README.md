@@ -11,6 +11,7 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - Only allow specific Telegram chat IDs with `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Incoming Telegram messages, the 09:00 news brief, and adaptive persona pings run only while at least one interactive Codex CLI session is alive. A locked private registry selects one exact thread as the sticky leader and fails over only when that owner ends.
 - The bridge never uses `codex exec resume --last`; it forks the explicit `CODEX_THREAD_ID` from the current Codex CLI session with `codex exec fork --ephemeral`, preserving context without competing for the live thread's writer lock.
+- Each ephemeral fork also receives recent inbound and outbound turns from the same Telegram chat, so short follow-ups such as “继续” retain their Telegram context without writing into the interactive Codex thread.
 - Scheduler-driven child turns disable lifecycle hooks and receive a minimal environment, so they cannot recursively start companions or inherit the Telegram token through the process environment.
 - The bridge runs `codex exec` with `--sandbox workspace-write`.
 - Incoming images, Markdown, PDF files, and configured voice/audio files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
@@ -132,6 +133,8 @@ TELEGRAM_TTS_MAX_CHARS=1200
 TELEGRAM_TTS_OUTPUT_EXTENSION=mp3
 TELEGRAM_TTS_SEND_AS=audio
 TELEGRAM_INBOX_ENABLED=1
+TELEGRAM_CONTEXT_RECENT_EVENTS=12
+TELEGRAM_CONTEXT_MAX_CHARS=12000
 TELEGRAM_PERSONA_ENABLED=1
 TELEGRAM_MEMORY_ENABLED=1
 TELEGRAM_MEMORY_AUTO=1
@@ -426,7 +429,9 @@ If `TELEGRAM_INBOX_ENABLED=1`, inbound Telegram messages and outbound Codex repl
 ~/.codex/channels/telegram/inbox.jsonl
 ```
 
-These files are local state. Do not commit them.
+These files are local state. Do not commit them. Before each ordinary Telegram-triggered fork, the bridge reads the newest `TELEGRAM_CONTEXT_RECENT_EVENTS` records for that chat, bounded by `TELEGRAM_CONTEXT_MAX_CHARS`. Records from other chats and the current inbound message are excluded.
+
+`scripts/pick_inbox.py` normally stores its read cursor beside these files. If a Codex sandbox can read the private inbox but cannot write that directory, the script automatically uses a private per-user cursor under the system temporary directory instead of failing.
 
 ## Persona and Memory
 
@@ -456,7 +461,7 @@ You can still force a memory when needed:
 remember: <stable preference to keep>
 ```
 
-Before each `codex exec` call, the bridge injects the persistent persona and the most recent explicit memory records into the prompt as context.
+Before each ordinary Telegram-triggered `codex exec` call, the bridge injects recent turns from the same chat, the persistent persona, and the most recent explicit memory records into the prompt as context. Same-chat history handles immediate follow-ups; selective memory remains reserved for durable facts and preferences.
 
 Memory commands:
 
