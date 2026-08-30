@@ -770,3 +770,80 @@ class HandleUpdateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueueModeTests(unittest.TestCase):
+    """Queue mode hands the turn to a live session and reads the answer back from its rollout log."""
+
+    @staticmethod
+    def _rollout_lines(*records: dict) -> str:
+        import json as _json
+
+        return "".join(_json.dumps(record) + "\n" for record in records)
+
+    def test_reads_answer_from_rollout_after_queueing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = make_config(root)
+            config.codex_use_queue = True
+            rollout = root / "rollout-thread-id.jsonl"
+            rollout.write_text(self._rollout_lines({"type": "turn_context"}), encoding="utf-8")
+            start = rollout.stat().st_size
+
+            def fake_run(args, **kwargs):
+                self.assertIn("queue", args)
+                self.assertIn("--thread", args)
+                rollout.write_text(
+                    rollout.read_text(encoding="utf-8")
+                    + self._rollout_lines(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"text": "hello"}],
+                            },
+                        },
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"text": "answered"}],
+                            },
+                        },
+                        {"type": "event_msg", "payload": {"type": "task_complete"}},
+                    ),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="Queued", stderr="")
+
+            with mock.patch.object(bridge.subprocess, "run", fake_run):
+                with mock.patch.object(bridge, "find_rollout_path", return_value=rollout):
+                    reply = bridge.run_codex_via_queue(
+                        config, "codex", "thread-id", "prompt text", []
+                    )
+            self.assertEqual(reply, "answered")
+            self.assertGreater(rollout.stat().st_size, start)
+
+    def test_raises_when_no_live_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp))
+            config.codex_use_queue = True
+            with mock.patch.object(bridge, "find_rollout_path", return_value=None):
+                with self.assertRaises(bridge.BridgeError):
+                    bridge.run_codex_via_queue(config, "codex", "thread-id", "prompt", [])
+
+    def test_partial_trailing_line_is_not_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "r.jsonl"
+            path.write_bytes(b'{"type":"a"}\n{"type":"par')
+            events, pos = bridge.read_new_rollout_events(path, 0)
+            self.assertEqual([event["type"] for event in events], ["a"])
+            self.assertEqual(pos, len(b'{"type":"a"}\n'))
+
+    def test_mode_label_reports_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp))
+            config.codex_use_queue = True
+            self.assertEqual(bridge.codex_mode_label(config), "queue:thread-id")

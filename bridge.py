@@ -257,6 +257,7 @@ class Config:
     tts_output_extension: str
     tts_send_as: str
     tts_flatten_punctuation: bool
+    codex_use_queue: bool = False
 
 
 def load_dotenv(path: Path) -> None:
@@ -317,6 +318,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         )
         if not codex_resume_session:
             raise BridgeError("CODEX_BIND_CURRENT_SESSION=1 but no CODEX_THREAD_ID is present. Start this bridge from inside a Codex CLI session.")
+    codex_use_queue = parse_bool(os.environ.get("CODEX_USE_QUEUE"), default=False)
     timeout = int(os.environ.get("CODEX_TIMEOUT_SECONDS", "1200"))
     resolved_state_path = state_path or Path(os.environ.get("TELEGRAM_STATE_PATH", str(DEFAULT_STATE_PATH))).expanduser()
     runtime_path = os.environ.get("TELEGRAM_RUNTIME_PATH", "").strip()
@@ -377,6 +379,7 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         codex_workdir=codex_workdir,
         codex_sandbox=codex_sandbox,
         codex_resume_session=codex_resume_session,
+        codex_use_queue=codex_use_queue,
         codex_timeout_seconds=timeout,
         state_path=resolved_state_path,
         runtime_path=Path(runtime_path).expanduser() if runtime_path else None,
@@ -1713,6 +1716,130 @@ def codex_prompt(
     return "\n".join(parts)
 
 
+SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
+
+
+def find_rollout_path(thread_id: str) -> Path | None:
+    """Locate the append-only rollout log Codex writes for a thread."""
+    matches = list(SESSIONS_ROOT.glob(f"*/*/*/rollout-*-{thread_id}.jsonl"))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item.stat().st_mtime)
+
+
+def read_new_rollout_events(path: Path, pos: int) -> tuple[list[dict[str, Any]], int]:
+    """Read whole JSONL records appended after pos. A trailing partial line is left for later."""
+    with path.open("rb") as handle:
+        handle.seek(pos)
+        data = handle.read()
+    if not data:
+        return [], pos
+    cut = data.rfind(b"\n")
+    if cut < 0:
+        return [], pos
+    usable = data[: cut + 1]
+    events: list[dict[str, Any]] = []
+    for raw in usable.split(b"\n"):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            events.append(record)
+    return events, pos + len(usable)
+
+
+def rollout_message_text(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for chunk in payload.get("content") or []:
+        if isinstance(chunk, dict):
+            text = chunk.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def run_codex_via_queue(
+    config: Config,
+    codex_executable: str,
+    thread_id: str,
+    payload_text: str,
+    image_paths: list[Path],
+) -> str:
+    """Hand the message to a live Codex session instead of opening a second writer.
+
+    `codex queue` appends the message to a session that is already running, so the
+    session itself stays the only writer on that thread. The answer is not printed
+    to stdout, so it is picked up from the thread's rollout log.
+    """
+    rollout = find_rollout_path(thread_id)
+    if rollout is None:
+        raise BridgeError(
+            f"No rollout log for thread {thread_id}. Queue mode needs a live Codex session."
+        )
+    pos = rollout.stat().st_size
+
+    args = [codex_executable, "queue", "--thread", thread_id, "--message", payload_text]
+    for image_path in image_paths:
+        args.extend(["--image", str(image_path)])
+    queued = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=str(config.codex_workdir),
+        timeout=120,
+    )
+    if queued.returncode != 0:
+        details = (
+            queued.stderr.strip()
+            or queued.stdout.strip()
+            or f"exit code {queued.returncode}"
+        )
+        raise BridgeError(f"codex queue failed: {details[-2000:]}")
+
+    deadline = time.monotonic() + config.codex_timeout_seconds
+    picked_up = False
+    replies: list[str] = []
+
+    while time.monotonic() < deadline:
+        events, pos = read_new_rollout_events(rollout, pos)
+        for event in events:
+            payload = event.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            kind = event.get("type")
+            if kind == "response_item" and payload.get("type") == "message":
+                role = payload.get("role")
+                if role == "user" and not picked_up:
+                    # The first user turn appended after we queued is ours.
+                    picked_up = True
+                    replies = []
+                elif role == "assistant" and picked_up:
+                    text = rollout_message_text(payload).strip()
+                    if text:
+                        replies.append(text)
+            elif (
+                kind == "event_msg"
+                and payload.get("type") == "task_complete"
+                and picked_up
+                and replies
+            ):
+                return "\n\n".join(replies)
+        time.sleep(1.0)
+
+    if replies:
+        return "\n\n".join(replies)
+    if not picked_up:
+        raise BridgeError(
+            "codex queue accepted the message but the session never started it. "
+            "The Codex session may be stopped or stuck."
+        )
+    raise BridgeError("Timed out waiting for the Codex session to answer.")
+
+
 def run_codex(
     config: Config,
     prompt: str,
@@ -1726,6 +1853,20 @@ def run_codex(
 
     attachment_items = attachments or []
     image_paths = [item.path for item in attachment_items if item.kind == "image"]
+    if config.codex_use_queue and config.codex_resume_session:
+        return run_codex_via_queue(
+            config,
+            codex_executable,
+            config.codex_resume_session,
+            codex_prompt(
+                config,
+                prompt,
+                sender,
+                attachments=attachment_items,
+                artifacts_dir=artifacts_dir,
+            ),
+            image_paths,
+        )
     with tempfile.TemporaryDirectory(prefix="codex-telegram-") as temp_dir:
         output_path = Path(temp_dir) / "last-message.txt"
         if config.codex_resume_session:
@@ -1788,6 +1929,8 @@ def run_codex(
 
 def codex_mode_label(config: Config) -> str:
     if config.codex_resume_session:
+        if config.codex_use_queue:
+            return f"queue:{config.codex_resume_session}"
         return f"resume:{config.codex_resume_session}"
     return "new-exec"
 
