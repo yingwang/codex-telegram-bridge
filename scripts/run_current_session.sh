@@ -10,8 +10,7 @@ if [[ -z "${CODEX_THREAD_ID:-}" && -z "${CODEX_SESSION_ID:-}" ]]; then
 fi
 
 export CODEX_BIND_CURRENT_SESSION=1
-export CODEX_SESSION_SCHEDULER=1
-export CODEX_SESSION_COMPANION_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 cd "$ROOT"
 exec /usr/bin/python3 bridge.py run
+

@@ -36,7 +36,7 @@ def main() -> int:
 
     grandchild_pid = os.fork()
     if grandchild_pid:
-        os.write(write_fd, f"{grandchild_pid} {os.getpgrp()}\n".encode("utf-8"))
+        os.write(write_fd, f"{grandchild_pid}\n".encode("utf-8"))
         os.close(write_fd)
         os._exit(0)
 
@@ -50,16 +50,6 @@ def main() -> int:
     os.dup2(log_fd, 2)
     os.close(null_fd)
     os.close(log_fd)
-
-    # The lifecycle wrapper deliberately keeps its flock descriptor open
-    # across exec while this launcher is running.  A detached bridge must not
-    # inherit that descriptor, otherwise it would hold the SessionStart/
-    # SessionEnd lock for its entire lifetime and every later hook would hang.
-    try:
-        maximum_fd = int(os.sysconf("SC_OPEN_MAX"))
-    except (OSError, ValueError):
-        maximum_fd = 65536
-    os.closerange(3, maximum_fd)
 
     os.execvp(command[0], command)
     return 127

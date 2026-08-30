@@ -2,11 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -26,30 +22,6 @@ def write_cursor(path: Path, value: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{value}\n", encoding="utf-8")
     path.chmod(0o600)
-
-
-def cursor_path_is_writable(path: Path) -> bool:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
-        os.close(fd)
-        path.chmod(0o600)
-    except OSError:
-        return False
-    return True
-
-
-def resolve_cursor_path(preferred: Path, inbox: Path) -> Path:
-    if cursor_path_is_writable(preferred):
-        return preferred
-
-    identity = str(inbox.expanduser().resolve(strict=False)).encode("utf-8")
-    suffix = hashlib.sha256(identity).hexdigest()[:16]
-    fallback = Path(tempfile.gettempdir()) / f"codex-telegram-inbox-{os.getuid()}-{suffix}.cursor"
-    if not cursor_path_is_writable(fallback):
-        raise PermissionError(f"Cannot write inbox cursor at {preferred} or fallback {fallback}")
-    print(f"Inbox cursor is not writable at {preferred}; using {fallback}", file=sys.stderr)
-    return fallback
 
 
 def load_events(path: Path, start: int) -> tuple[list[dict[str, Any]], int]:
@@ -94,7 +66,7 @@ def main() -> int:
     args = parser.parse_args()
 
     inbox = Path(args.inbox).expanduser()
-    cursor = resolve_cursor_path(Path(args.cursor).expanduser(), inbox)
+    cursor = Path(args.cursor).expanduser()
     start = read_cursor(cursor)
     events, last_line = load_events(inbox, start)
 

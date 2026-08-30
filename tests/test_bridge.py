@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,8 +24,6 @@ def make_config(root: Path) -> bridge.Config:
         inbox_enabled=False,
         inbox_path=root / "inbox.md",
         inbox_jsonl_path=root / "inbox.jsonl",
-        context_recent_events=12,
-        context_max_chars=12000,
         persona_enabled=False,
         persona_path=root / "persona.md",
         memory_enabled=False,
@@ -410,85 +406,7 @@ class TtsTests(unittest.TestCase):
 
 
 class CodexInvocationTests(unittest.TestCase):
-    def test_prompt_injects_only_recent_same_chat_and_excludes_current_message(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            config.inbox_enabled = True
-            events = [
-                {"ts": "1", "direction": "in", "chat_id": "123", "message_id": "10", "sender": "Ying", "text": "trade"},
-                {"ts": "2", "direction": "out", "chat_id": "123", "message_id": "10", "sender": "Codex", "text": "下一步做 attribution"},
-                {"ts": "3", "direction": "in", "chat_id": "999", "message_id": "11", "sender": "Other", "text": "unrelated secret"},
-                {"ts": "4", "direction": "in", "chat_id": "123", "message_id": "12", "sender": "Ying", "text": "继续"},
-            ]
-            config.inbox_jsonl_path.write_text(
-                "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
-                encoding="utf-8",
-            )
-
-            prompt = bridge.codex_prompt(
-                config,
-                "继续",
-                "Ying",
-                chat_id="123",
-                current_message_id="12",
-            )
-
-            self.assertIn("Recent Telegram conversation for this chat", prompt)
-            self.assertIn("trade", prompt)
-            self.assertIn("下一步做 attribution", prompt)
-            self.assertNotIn("unrelated secret", prompt)
-            self.assertEqual(prompt.count("继续"), 1)
-
-    def test_fork_invocation_is_ephemeral_disables_hooks_and_sanitizes_child_environment(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            captured: dict[str, object] = {}
-
-            def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
-                captured["args"] = args
-                captured["env"] = kwargs["env"]
-                output_path = Path(args[args.index("--output-last-message") + 1])
-                output_path.write_text("ok", encoding="utf-8")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            inherited = {
-                "TELEGRAM_BOT_TOKEN": "secret",
-                "TELEGRAM_ALLOWED_CHAT_IDS": "123",
-                "CODEX_THREAD_ID": "parent-thread",
-                "CODEX_SESSION_SCHEDULER": "1",
-                "CODEX_SESSION_OWNER_PID": "999",
-                "UNRELATED_SETTING": "keep-me",
-            }
-            with mock.patch.dict(os.environ, inherited, clear=False):
-                with mock.patch.object(bridge.shutil, "which", return_value="/usr/bin/codex"):
-                    with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
-                        reply = bridge.run_codex(config, "hello", sender="Tester")
-
-            self.assertEqual(reply, "ok")
-            args = captured["args"]
-            assert isinstance(args, list)
-            self.assertEqual(args[:6], [
-                "/usr/bin/codex",
-                "--disable",
-                "hooks",
-                "exec",
-                "fork",
-                "--ephemeral",
-            ])
-            self.assertEqual(args[-2:], ["thread-id", "-"])
-            self.assertNotIn("resume", args)
-            self.assertNotIn("--last", args)
-            env = captured["env"]
-            assert isinstance(env, dict)
-            self.assertEqual(env["UNRELATED_SETTING"], "keep-me")
-            self.assertFalse(any(key.startswith("TELEGRAM_") for key in env))
-            self.assertNotIn("CODEX_THREAD_ID", env)
-            self.assertNotIn("CODEX_SESSION_SCHEDULER", env)
-            self.assertNotIn("CODEX_SESSION_OWNER_PID", env)
-
-    def test_fork_invocation_attaches_images_and_describes_documents(self) -> None:
+    def test_resume_invocation_attaches_images_and_describes_documents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = make_config(root)
@@ -558,192 +476,6 @@ class CodexInvocationTests(unittest.TestCase):
             self.assertIn("明天十点提醒我。", prompt)
 
 
-class SessionCompanionTests(unittest.TestCase):
-    def test_registry_failover_updates_exact_thread_owner_and_runtime_binding(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            config.session_registry_path = root / "sessions.json"
-            config.runtime_path = root / "runtime.json"
-            config.codex_resume_session = "old-thread"
-            config.owner_pid = 111
-            config.owner_start_token = "old-owner-start"
-            config.runtime_path.write_text(
-                json.dumps(
-                    {
-                        "pid": os.getpid(),
-                        "thread_id": "old-thread",
-                        "owner_pid": 111,
-                        "owner_start": "old-owner-start",
-                        "live_session_count": 1,
-                        "unrelated": "preserved",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            new_leader = SimpleNamespace(
-                session_id="new-thread",
-                owner_pid=222,
-                owner_start="new-owner-start",
-            )
-            snapshot = SimpleNamespace(
-                leader=new_leader,
-                sessions={"first": object(), "second": new_leader},
-            )
-            registry = mock.Mock()
-            registry.prune.return_value = snapshot
-
-            with mock.patch.object(bridge, "SessionRegistry", return_value=registry) as registry_type:
-                self.assertTrue(bridge.reconcile_live_session(config))
-
-            registry_type.assert_called_once_with(config.session_registry_path)
-            registry.prune.assert_called_once_with()
-            self.assertEqual(config.codex_resume_session, "new-thread")
-            self.assertEqual(config.owner_pid, 222)
-            self.assertEqual(config.owner_start_token, "new-owner-start")
-            runtime = json.loads(config.runtime_path.read_text(encoding="utf-8"))
-            self.assertEqual(runtime["thread_id"], "new-thread")
-            self.assertEqual(runtime["owner_pid"], 222)
-            self.assertEqual(runtime["owner_start"], "new-owner-start")
-            self.assertEqual(runtime["live_session_count"], 2)
-            self.assertEqual(runtime["unrelated"], "preserved")
-
-    def test_empty_registry_returns_false_without_rebinding(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            config.session_registry_path = root / "sessions.json"
-            config.codex_resume_session = "old-thread"
-            config.owner_pid = 111
-            config.owner_start_token = "old-owner-start"
-            snapshot = SimpleNamespace(leader=None, sessions={})
-            registry = mock.Mock()
-            registry.prune.return_value = snapshot
-
-            with mock.patch.object(bridge, "SessionRegistry", return_value=registry):
-                self.assertFalse(bridge.reconcile_live_session(config))
-
-            self.assertEqual(config.codex_resume_session, "old-thread")
-            self.assertEqual(config.owner_pid, 111)
-            self.assertEqual(config.owner_start_token, "old-owner-start")
-
-    def test_corrupt_registry_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            config.session_registry_path = root / "sessions.json"
-            config.session_registry_path.write_text("{not-json", encoding="utf-8")
-
-            with mock.patch.object(bridge, "owner_session_alive") as owner_alive:
-                self.assertFalse(bridge.reconcile_live_session(config))
-
-            owner_alive.assert_not_called()
-
-    def test_reconcile_without_registry_uses_legacy_owner_check(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = make_config(Path(temp_dir))
-            config.session_registry_path = None
-
-            with mock.patch.object(bridge, "owner_session_alive", return_value=False) as owner_alive:
-                self.assertFalse(bridge.reconcile_live_session(config))
-
-            owner_alive.assert_called_once_with(config)
-
-    def test_owner_session_without_pid_is_alive(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = make_config(Path(temp_dir))
-            config.owner_pid = None
-            with mock.patch.object(bridge.os, "kill") as kill:
-                self.assertTrue(bridge.owner_session_alive(config))
-            kill.assert_not_called()
-
-    def test_owner_session_is_dead_when_pid_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = make_config(Path(temp_dir))
-            config.owner_pid = 4321
-            with mock.patch.object(bridge.os, "kill", side_effect=ProcessLookupError):
-                self.assertFalse(bridge.owner_session_alive(config))
-
-    def test_owner_session_requires_matching_process_start_token(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = make_config(Path(temp_dir))
-            config.owner_pid = 4321
-            config.owner_start_token = "Wed Aug 12 09:00:00 2026"
-            process = SimpleNamespace(
-                returncode=0,
-                stdout=" Wed Aug 12 09:00:00 2026 \n",
-            )
-            with mock.patch.object(bridge.os, "kill"):
-                with mock.patch.object(bridge.subprocess, "run", return_value=process) as run:
-                    self.assertTrue(bridge.owner_session_alive(config))
-            run.assert_called_once_with(
-                ["/bin/ps", "-p", "4321", "-o", "lstart="],
-                text=True,
-                stdout=bridge.subprocess.PIPE,
-                stderr=bridge.subprocess.DEVNULL,
-                timeout=2,
-            )
-
-            process.stdout = "Wed Aug 12 09:00:01 2026\n"
-            with mock.patch.object(bridge.os, "kill"):
-                with mock.patch.object(bridge.subprocess, "run", return_value=process):
-                    self.assertFalse(bridge.owner_session_alive(config))
-
-    def test_session_tick_uses_exact_thread_and_minimal_environment(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            config = make_config(root)
-            config.env_path = root / ".env"
-            config.session_scheduler_enabled = True
-            config.session_started_at = "2026-08-12T09:00:00Z"
-            captured: dict[str, object] = {}
-
-            def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
-                captured["args"] = args
-                captured["kwargs"] = kwargs
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            inherited = {
-                "TELEGRAM_BOT_TOKEN": "secret",
-                "CODEX_THREAD_ID": "parent-thread",
-                "TMPDIR": "/tmp/test-tmp",
-            }
-            with mock.patch.dict(os.environ, inherited, clear=False):
-                with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
-                    bridge.run_session_tick(config)
-
-            args = captured["args"]
-            assert isinstance(args, list)
-            self.assertEqual(args, [
-                "/usr/bin/python3",
-                str(Path(bridge.__file__).resolve().with_name("scheduler.py")),
-                "--env",
-                str(config.env_path),
-                "session-tick",
-                "--thread-id",
-                "thread-id",
-                "--session-started-at",
-                "2026-08-12T09:00:00Z",
-            ])
-            kwargs = captured["kwargs"]
-            assert isinstance(kwargs, dict)
-            env = kwargs["env"]
-            assert isinstance(env, dict)
-            self.assertEqual(env["TMPDIR"], "/tmp/test-tmp")
-            self.assertNotIn("TELEGRAM_BOT_TOKEN", env)
-            self.assertNotIn("CODEX_THREAD_ID", env)
-            self.assertEqual(kwargs["cwd"], str(Path(bridge.__file__).resolve().parent))
-            self.assertEqual(kwargs["timeout"], config.codex_timeout_seconds + 30)
-
-    def test_session_tick_is_disabled_without_scheduler_flag(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = make_config(Path(temp_dir))
-            config.session_scheduler_enabled = False
-            with mock.patch.object(bridge.subprocess, "run") as run:
-                bridge.run_session_tick(config)
-            run.assert_not_called()
-
-
 class HandleUpdateTests(unittest.TestCase):
     def test_image_can_produce_and_send_generated_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -789,12 +521,8 @@ class HandleUpdateTests(unittest.TestCase):
                 sender: str,
                 attachments: list[bridge.DownloadedAttachment],
                 artifacts_dir: Path,
-                chat_id: str,
-                current_message_id: int,
             ) -> str:
                 self.assertEqual(sender, "Tester")
-                self.assertEqual(chat_id, "123")
-                self.assertEqual(current_message_id, 21)
                 self.assertEqual(len(attachments), 1)
                 output = artifacts_dir / "generated.png"
                 output.write_bytes(b"png")
@@ -871,13 +599,9 @@ class HandleUpdateTests(unittest.TestCase):
                 sender: str,
                 attachments: list[bridge.DownloadedAttachment],
                 artifacts_dir: Path,
-                chat_id: str,
-                current_message_id: int,
             ) -> str:
                 self.assertEqual(prompt, "请根据这段语音内容回复。")
                 self.assertEqual(sender, "Tester")
-                self.assertEqual(chat_id, "123")
-                self.assertEqual(current_message_id, 22)
                 self.assertEqual(attachments[0].transcript, "这是一条语音。")
                 self.assertTrue(artifacts_dir.exists())
                 return "收到。"
