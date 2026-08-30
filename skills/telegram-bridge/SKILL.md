@@ -13,15 +13,15 @@ Do not read or modify Claude Code Telegram files unless the user explicitly asks
 
 The bridge is an any-live-Codex-session long-polling process. It opens no port, creates no webhook, installs no LaunchAgent, and does not run as a system service. SessionStart registers exact thread/owner leases; one sticky live leader receives Telegram turns, another verified lease takes over if it ends, and the bridge stops only after the final lease ends.
 
-Activation from a Codex CLI session registers the current exact `CODEX_THREAD_ID`. The bridge handles each incoming Telegram message by resuming the current verified leader:
+Activation from a Codex CLI session registers the current exact `CODEX_THREAD_ID`. The bridge handles each incoming Telegram message with an ephemeral fork of the current verified leader:
 
 ```bash
-codex exec resume <current CODEX_THREAD_ID>
+codex exec fork --ephemeral <current CODEX_THREAD_ID>
 ```
 
-The bridge loop handles Telegram messages serially, so replies accumulate as native multi-turn history in the exact thread. Never use `codex exec resume --last`; it can target the wrong session.
+The fork inherits the exact conversation context without competing for or modifying the interactive thread's active writer. Never use `codex exec resume --last`; it can target the wrong session.
 
-The first successful resume for each thread/chat binding also receives bounded recent same-chat history once, which bridges conversations created by older ephemeral versions. Later turns rely on native thread history. Scheduled news and persona work remains isolated in ephemeral forks.
+Each Telegram-triggered fork also receives a bounded recent history from the same Telegram chat. The bridge excludes records from other chats and the current inbound message, which is already present as the prompt. This preserves follow-ups such as “继续” while keeping every execution ephemeral.
 
 ## Activate
 

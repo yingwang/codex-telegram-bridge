@@ -10,8 +10,8 @@ It uses Telegram long polling, so it does not open a public port and does not ne
 - This bridge does not read or write `~/.claude`, Claude Code plugins, or Claude Code Telegram channel files.
 - Only allow specific Telegram chat IDs with `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Incoming Telegram messages, the 09:00 news brief, and adaptive persona pings run only while at least one interactive Codex CLI session is alive. A locked private registry selects one exact thread as the sticky leader and fails over only when that owner ends.
-- The bridge never uses `codex exec resume --last`; ordinary Telegram messages resume the explicit `CODEX_THREAD_ID` selected from the live-session registry, so the conversation accumulates as native multi-turn history in one exact thread.
-- The bridge loop serializes Telegram work. On the first successful resume for a thread/chat binding, it includes bounded recent same-chat turns once to bridge history created by older ephemeral versions; later turns rely on native thread history.
+- The bridge never uses `codex exec resume --last`; it forks the explicit `CODEX_THREAD_ID` from the current Codex CLI session with `codex exec fork --ephemeral`, preserving context without competing for the live thread's writer lock.
+- Each ephemeral fork also receives recent inbound and outbound turns from the same Telegram chat, so short follow-ups such as “继续” retain their Telegram context without writing into the interactive Codex thread.
 - Scheduler-driven child turns disable lifecycle hooks and receive a minimal environment, so they cannot recursively start companions or inherit the Telegram token through the process environment.
 - The bridge runs `codex exec` with `--sandbox workspace-write`.
 - Incoming images, Markdown, PDF files, and configured voice/audio files are downloaded into a private per-request directory under `CODEX_WORKDIR` and deleted after the reply is sent.
@@ -48,10 +48,10 @@ flowchart TD
   gate -->|No| reject[Ignore or reply with /id in discovery mode]
   gate -->|Yes| mode{Run mode}
 
-  mode -->|Current session| resume[codex exec resume<br/>&lt;CODEX_THREAD_ID&gt;]
+  mode -->|Current session| fork[codex exec fork --ephemeral<br/>&lt;CODEX_THREAD_ID&gt;]
   mode -->|Manual mode| exec[codex exec<br/>-C CODEX_WORKDIR]
 
-  resume --> codex[Codex]
+  fork --> codex[Codex]
   exec --> codex
   codex --> reply[Final response]
   reply --> bridge
@@ -75,8 +75,7 @@ flowchart TD
 
   activate --> bridge
   end --> registry
-  timers --> fork[Ephemeral scheduled fork]
-  fork --> codex
+  timers --> fork
   foreground --> bridge
   manual --> bridge
   send --> bot
@@ -85,7 +84,7 @@ flowchart TD
 
 The bridge is a local Telegram Bot API client. Telegram never connects inbound to your machine; the bridge repeatedly calls `getUpdates`, receives allowed messages, invokes Codex, and sends the final response back with `sendMessage`.
 
-In live-session mode, the companion never guesses or uses `--last`. `SessionStart` registers exact thread and owner-process leases; the first live leader stays selected until it ends, then the bridge atomically moves to another verified live lease. Ordinary Telegram messages call `codex exec resume <exact ID>` and therefore become native turns in that conversation. The single bridge loop serializes Telegram replies, while scheduled news and persona checks remain ephemeral forks so timer output cannot silently steer later user conversations. Telegram polling uses one global offset across leader changes, so failover cannot replay old updates.
+In live-session mode, the companion never guesses or uses `--last`. `SessionStart` registers exact thread and owner-process leases; the first live leader stays selected until it ends, then the bridge atomically moves to another verified live lease. Each Telegram or scheduled turn calls `codex exec fork --ephemeral <exact ID>`, so it inherits the selected conversation context without contending for or modifying the active interactive thread. The single bridge loop serializes Telegram replies and scheduled turns. Telegram polling uses one global offset across leader changes, so failover cannot replay old updates.
 
 ## Install
 
@@ -430,7 +429,7 @@ If `TELEGRAM_INBOX_ENABLED=1`, inbound Telegram messages and outbound Codex repl
 ~/.codex/channels/telegram/inbox.jsonl
 ```
 
-These files are local state. Do not commit them. When a bridge process first resumes a particular thread/chat binding, it reads the newest `TELEGRAM_CONTEXT_RECENT_EVENTS` records for that chat, bounded by `TELEGRAM_CONTEXT_MAX_CHARS`. Records from other chats and the current inbound message are excluded. After that first successful resume, native thread history supplies conversational continuity without repeated transcript injection.
+These files are local state. Do not commit them. Before each ordinary Telegram-triggered fork, the bridge reads the newest `TELEGRAM_CONTEXT_RECENT_EVENTS` records for that chat, bounded by `TELEGRAM_CONTEXT_MAX_CHARS`. Records from other chats and the current inbound message are excluded.
 
 `scripts/pick_inbox.py` normally stores its read cursor beside these files. If a Codex sandbox can read the private inbox but cannot write that directory, the script automatically uses a private per-user cursor under the system temporary directory instead of failing.
 
@@ -462,7 +461,7 @@ You can still force a memory when needed:
 remember: <stable preference to keep>
 ```
 
-Before the first ordinary Telegram-triggered resume for a thread/chat binding, the bridge injects recent same-chat turns once as migration context. Subsequent messages use the resumed thread's native history. The persistent persona and most recent selective memory records remain available on every turn; selective memory is reserved for durable facts and preferences.
+Before each ordinary Telegram-triggered `codex exec` call, the bridge injects recent turns from the same chat, the persistent persona, and the most recent explicit memory records into the prompt as context. Same-chat history handles immediate follow-ups; selective memory remains reserved for durable facts and preferences.
 
 Memory commands:
 
