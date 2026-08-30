@@ -440,7 +440,7 @@ class CodexInvocationTests(unittest.TestCase):
             self.assertNotIn("unrelated secret", prompt)
             self.assertEqual(prompt.count("继续"), 1)
 
-    def test_fork_invocation_is_ephemeral_disables_hooks_and_sanitizes_child_environment(self) -> None:
+    def test_resume_invocation_uses_exact_thread_disables_hooks_and_sanitizes_child_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = make_config(root)
@@ -474,11 +474,12 @@ class CodexInvocationTests(unittest.TestCase):
                 "--disable",
                 "hooks",
                 "exec",
-                "fork",
-                "--ephemeral",
+                "resume",
+                "--skip-git-repo-check",
             ])
             self.assertEqual(args[-2:], ["thread-id", "-"])
-            self.assertNotIn("resume", args)
+            self.assertNotIn("fork", args)
+            self.assertNotIn("--ephemeral", args)
             self.assertNotIn("--last", args)
             env = captured["env"]
             assert isinstance(env, dict)
@@ -488,7 +489,58 @@ class CodexInvocationTests(unittest.TestCase):
             self.assertNotIn("CODEX_SESSION_SCHEDULER", env)
             self.assertNotIn("CODEX_SESSION_OWNER_PID", env)
 
-    def test_fork_invocation_attaches_images_and_describes_documents(self) -> None:
+    def test_resume_bootstraps_recent_chat_once_then_uses_native_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = make_config(root)
+            config.inbox_enabled = True
+            config.inbox_jsonl_path.write_text(
+                json.dumps(
+                    {
+                        "ts": "1",
+                        "direction": "in",
+                        "chat_id": "123",
+                        "message_id": "10",
+                        "sender": "Ying",
+                        "text": "旧消息",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            prompts: list[str] = []
+
+            def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+                prompts.append(str(kwargs["input"]))
+                output_path = Path(args[args.index("--output-last-message") + 1])
+                output_path.write_text("ok", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(bridge.shutil, "which", return_value="/usr/bin/codex"):
+                with mock.patch.object(bridge.subprocess, "run", side_effect=fake_run):
+                    bridge.run_codex(
+                        config,
+                        "第一条",
+                        sender="Tester",
+                        chat_id="123",
+                        current_message_id="11",
+                    )
+                    bridge.run_codex(
+                        config,
+                        "第二条",
+                        sender="Tester",
+                        chat_id="123",
+                        current_message_id="12",
+                    )
+
+            self.assertIn("Recent Telegram conversation for this chat", prompts[0])
+            self.assertIn("旧消息", prompts[0])
+            self.assertNotIn("Recent Telegram conversation for this chat", prompts[1])
+            self.assertNotIn("旧消息", prompts[1])
+            self.assertEqual(config.native_context_seeded, {("thread-id", "123")})
+
+    def test_resume_invocation_attaches_images_and_describes_documents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config = make_config(root)
