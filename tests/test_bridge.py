@@ -826,6 +826,53 @@ class QueueModeTests(unittest.TestCase):
             self.assertEqual(reply, "answered")
             self.assertGreater(rollout.stat().st_size, start)
 
+    def test_images_travel_as_paths_because_queue_rejects_the_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = make_config(root)
+            config.codex_use_queue = True
+            rollout = root / "rollout-thread-id.jsonl"
+            rollout.write_text(self._rollout_lines({"type": "turn_context"}), encoding="utf-8")
+            seen = {}
+
+            def fake_run(args, **kwargs):
+                seen["args"] = args
+                rollout.write_text(
+                    rollout.read_text(encoding="utf-8")
+                    + self._rollout_lines(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"text": "hello"}],
+                            },
+                        },
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"text": "answered"}],
+                            },
+                        },
+                        {"type": "event_msg", "payload": {"type": "task_complete"}},
+                    ),
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="Queued", stderr="")
+
+            with mock.patch.object(bridge.subprocess, "run", fake_run):
+                with mock.patch.object(bridge, "find_rollout_path", return_value=rollout):
+                    bridge.run_codex_via_queue(
+                        config, "codex", "thread-id", "prompt text", [Path("/incoming/cat.jpg")]
+                    )
+
+            args = seen["args"]
+            self.assertNotIn("--image", args)
+            message = args[args.index("--message") + 1]
+            self.assertIn("/incoming/cat.jpg", message)
+
     def test_raises_when_no_live_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = make_config(Path(tmp))

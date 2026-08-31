@@ -1781,9 +1781,19 @@ def run_codex_via_queue(
         )
     pos = rollout.stat().st_size
 
+    # `codex queue` advertises --image but rejects it before it even resolves the
+    # thread, so images reach the live session as paths it opens from disk. The
+    # prompt already lists every attachment path; this makes the intent explicit.
+    if image_paths:
+        payload_text = "\n".join(
+            [
+                payload_text,
+                "",
+                "Image attachments could not be inlined for this message. Open these files directly to see them:",
+                *[f"- {image_path}" for image_path in image_paths],
+            ]
+        )
     args = [codex_executable, "queue", "--thread", thread_id, "--message", payload_text]
-    for image_path in image_paths:
-        args.extend(["--image", str(image_path)])
     queued = subprocess.run(
         args,
         text=True,
