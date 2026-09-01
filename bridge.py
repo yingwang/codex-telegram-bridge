@@ -1835,9 +1835,13 @@ def run_codex_via_queue(
                 kind == "event_msg"
                 and payload.get("type") == "task_complete"
                 and picked_up
-                and replies
             ):
-                return "\n\n".join(replies)
+                error_payload = payload.get("error")
+                if error_payload:
+                    err_msg = error_payload.get("message") or str(error_payload)
+                    raise BridgeError(f"Codex 执行失败：{err_msg}")
+                if replies:
+                    return "\n\n".join(replies)
         time.sleep(1.0)
 
     if replies:
