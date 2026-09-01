@@ -41,6 +41,28 @@ is_bridge_pid() {
   [[ "$command_line" == *"bridge.py run"* ]]
 }
 
+# Was this session started by a scheduled automation rather than by a person?
+#
+# Automations open a Codex session like any other, so SessionStart fires for them too, and
+# on 2026-09-01 the daily one took the bridge away from a live terminal session. What
+# arrives in Telegram afterwards looks broken in two specific ways: the thread has no
+# memory, because it is a fresh task-scoped session, and every reply ends with a
+# ::inbox-item{...} block, because the automation's own developer prompt requires one.
+#
+# The session's rollout says plainly which kind it is. An automation carries an
+# `Automation ID:` line in its opening developer message; an interactive session does not.
+# Only the head of the file is read, so a later conversation that happens to discuss
+# automations cannot be mistaken for one. A missing or unreadable rollout counts as
+# interactive, so a failed lookup can never stop a real session from activating.
+session_is_automation() {
+  local thread="${1:-}"
+  local rollout=""
+  [[ -n "$thread" ]] || return 1
+  rollout="$(/usr/bin/find "$HOME/.codex/sessions" -name "rollout-*-$thread.jsonl" -print 2>/dev/null | /usr/bin/head -n 1)"
+  [[ -n "$rollout" && -r "$rollout" ]] || return 1
+  /usr/bin/head -n 10 "$rollout" 2>/dev/null | /usr/bin/grep -q "Automation ID:"
+}
+
 replace_enabled() {
   case "${1:-}" in
     1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Yy]|[Oo][Nn]) return 0 ;;
@@ -66,6 +88,13 @@ fi
 if [[ -z "$THREAD_ID" ]]; then
   echo "CODEX_THREAD_ID is missing. Activate from inside a Codex CLI session." >&2
   exit 2
+fi
+
+if session_is_automation "$THREAD_ID"; then
+  # Exit 0 on purpose: for a scheduled run this is the correct outcome, not a fault, and a
+  # non-zero status would surface as a failing hook on every single automation.
+  echo "Leaving the Telegram bridge alone: thread=$THREAD_ID is a scheduled automation, not a session anyone is talking to."
+  exit 0
 fi
 
 export CODEX_THREAD_ID="$THREAD_ID"
