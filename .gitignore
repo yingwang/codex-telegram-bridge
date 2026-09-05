@@ -8,3 +8,4 @@ inbox.md
 inbox.jsonl
 __pycache__/
 .DS_Store
+.test-artifacts/

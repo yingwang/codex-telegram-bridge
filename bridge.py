@@ -257,6 +257,9 @@ class Config:
     tts_output_extension: str
     tts_send_as: str
     tts_flatten_punctuation: bool
+    env_path: Path = DEFAULT_ENV_PATH
+    session_scheduler_enabled: bool = False
+    session_started_at: str | None = None
     codex_use_queue: bool = False
 
 
@@ -359,6 +362,8 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         "TELEGRAM_TTS_SEND_AS",
     )
     tts_flatten_punctuation = parse_bool(os.environ.get("TELEGRAM_TTS_FLATTEN_PUNCTUATION"), default=False)
+    session_scheduler_enabled = parse_bool(os.environ.get("CODEX_SESSION_SCHEDULER"), default=False)
+    session_started_at = os.environ.get("CODEX_SESSION_COMPANION_STARTED_AT", "").strip() or None
     if max_download_bytes <= 0 or max_upload_bytes <= 0:
         raise BridgeError("Telegram attachment byte limits must be positive")
     if max_artifact_files < 0:
@@ -409,6 +414,9 @@ def read_config(env_path: Path, state_path: Path | None) -> Config:
         tts_output_extension=tts_output_extension,
         tts_send_as=tts_send_as,
         tts_flatten_punctuation=tts_flatten_punctuation,
+        env_path=env_path,
+        session_scheduler_enabled=session_scheduler_enabled,
+        session_started_at=session_started_at,
     )
 
 
@@ -551,12 +559,13 @@ def download_telegram_file(config: Config, file_id: str, destination: Path) -> i
     return len(data)
 
 
-def send_message(config: Config, chat_id: str, text: str) -> None:
+def send_message(config: Config, chat_id: str, text: str) -> list[Any]:
     if not text:
         text = "(empty response)"
     chunks = split_message(text, TELEGRAM_MESSAGE_LIMIT)
+    results: list[Any] = []
     for chunk in chunks:
-        api_call(
+        result = api_call(
             config,
             "sendMessage",
             {
@@ -566,6 +575,8 @@ def send_message(config: Config, chat_id: str, text: str) -> None:
             },
             timeout=30,
         )
+        results.append(result)
+    return results
 
 
 def send_document(config: Config, chat_id: str, path: Path, caption: str = "") -> None:
@@ -1095,6 +1106,8 @@ def append_inbox_event(
     text: str,
     sender: str,
     message_id: str | int | None = None,
+    chat_id: str | int | None = None,
+    source: str | None = None,
 ) -> None:
     if not config.inbox_enabled:
         return
@@ -1106,6 +1119,10 @@ def append_inbox_event(
         "message_id": str(message_id) if message_id is not None else None,
         "text": text,
     }
+    if chat_id is not None:
+        event["chat_id"] = str(chat_id)
+    if source is not None:
+        event["source"] = source
 
     config.inbox_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     config.inbox_jsonl_path.parent.chmod(0o700)
@@ -1504,6 +1521,7 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
             text=prompt,
             sender=sender_label(message),
             message_id=message.get("message_id"),
+            chat_id=chat_id,
         )
         append_memory_entry(
             config,
@@ -1563,6 +1581,7 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
             text=inbox_text,
             sender=sender_label(message),
             message_id=message.get("message_id"),
+            chat_id=chat_id,
         )
         if config.ack_message:
             send_message(config, chat_id, config.ack_message)
@@ -1635,6 +1654,7 @@ def handle_update(config: Config, update: dict[str, Any]) -> None:
             text=inbox_reply,
             sender="Codex",
             message_id=message.get("message_id"),
+            chat_id=chat_id,
         )
 
 
@@ -1949,6 +1969,52 @@ def codex_mode_label(config: Config) -> str:
     return "new-exec"
 
 
+def run_session_tick(config: Config) -> None:
+    if not config.session_scheduler_enabled or not config.codex_resume_session:
+        return
+    scheduler_path = Path(__file__).resolve().with_name("scheduler.py")
+    if not scheduler_path.is_file():
+        print("Session scheduler unavailable: scheduler.py is missing", file=sys.stderr, flush=True)
+        return
+    args = [
+        "/usr/bin/python3",
+        str(scheduler_path),
+        "--env",
+        str(config.env_path),
+        "session-tick",
+        "--thread-id",
+        config.codex_resume_session,
+    ]
+    if config.session_started_at:
+        args.extend(["--session-started-at", config.session_started_at])
+    env = {
+        "HOME": str(Path.home()),
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "TMPDIR": os.environ.get("TMPDIR", "/private/tmp"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
+        "USER": os.environ.get("USER", Path.home().name),
+        "LOGNAME": os.environ.get("LOGNAME", Path.home().name),
+        "PYTHONPYCACHEPREFIX": str(Path.home() / ".codex" / "channels" / "telegram" / "scheduler" / "pycache"),
+    }
+    try:
+        process = subprocess.run(
+            args,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(scheduler_path.parent),
+            env=env,
+            timeout=config.codex_timeout_seconds + 30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Session scheduler tick failed: {exc}", file=sys.stderr, flush=True)
+        return
+    if process.returncode != 0:
+        details = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+        print(f"Session scheduler tick failed: {details[-1200:]}", file=sys.stderr, flush=True)
+
+
 def run_loop(config: Config, once: bool = False) -> None:
     print(
         f"Starting bridge workdir={config.codex_workdir} "
@@ -1968,6 +2034,7 @@ def run_loop(config: Config, once: bool = False) -> None:
             updates = api_call(config, "getUpdates", payload, timeout=60)
         except BridgeError as exc:
             print(f"{exc}", file=sys.stderr, flush=True)
+            run_session_tick(config)
             if once:
                 raise
             time.sleep(5)
@@ -1983,6 +2050,7 @@ def run_loop(config: Config, once: bool = False) -> None:
                 return
             except Exception as exc:
                 print(f"Failed to handle update {update_id}: {exc}", file=sys.stderr, flush=True)
+        run_session_tick(config)
 
         if once:
             return

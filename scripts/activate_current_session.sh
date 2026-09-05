@@ -139,6 +139,8 @@ cd "$ROOT"
 /usr/bin/python3 bridge.py get-me >/dev/null
 
 export CODEX_BIND_CURRENT_SESSION=1
+export CODEX_SESSION_SCHEDULER=1
+export CODEX_SESSION_COMPANION_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 export TELEGRAM_STATE_PATH="$STATE_FILE"
 export TELEGRAM_RUNTIME_PATH="$RUNTIME"
 : > "$LOG"
