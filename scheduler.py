@@ -41,7 +41,6 @@ NEWS_CATCHUP_END = wall_time(13, 0)
 RP_START = wall_time(9, 35)
 RP_END = wall_time(22, 15)
 DEFAULT_MAX_RP_PER_DAY = 5
-MAX_CONSECUTIVE_UNANSWERED = 2
 STATE_VERSION = 3
 PING_SCHEMA_PATH = REPO_ROOT / "schemas" / "scheduled-ping.schema.json"
 DIRECTIVE_RE = re.compile(r"<telegram_(?:memory|attachments)>.*?</telegram_(?:memory|attachments)>", re.I | re.S)
@@ -432,10 +431,8 @@ def reset_rp_day(rp: dict[str, Any], now: datetime, tz: ZoneInfo) -> None:
     if rp.get("sent_local_date") != today:
         rp["sent_local_date"] = today
         rp["sent_today"] = 0
-        # Silence reduces the following day's frequency, but must not disable
-        # proactive messages forever.  Decay to one unanswered message so at
-        # most one cautious cold ping is possible on the new day.
-        rp["consecutive_unanswered"] = min(int(rp.get("consecutive_unanswered") or 0), 1)
+        # Keep unanswered history until a reply arrives. Silence changes the
+        # random delay band, not whether proactive messages remain enabled.
 
 
 def synchronize_reply_state(
@@ -649,7 +646,7 @@ def ping_prompt(
 {compact_conversation(events, limit=40)}
 ---
 
-决策规则：如果对方刚刚还在与普通 Telegram bridge 对话，通常不要另插一条重复消息；如果上一条主动消息没有得到回应，要更克制并拉长间隔；如果对方有回应或聊天很热，可以在范围内稍早一些。若发送，message 必须是中文，遵循上面的可信角色设定，一至两句且不超过220字，自然承接当下，不提定时器、算法、活跃度或自动化，不催回复、不施压、不制造愧疚或排他依赖。若不发送，message 置为空字符串。next_delay_minutes 必须落在允许范围内。只输出符合 schema 的 JSON。"""
+决策规则：如果对方刚刚还在与普通 Telegram bridge 对话，通常不要另插一条重复消息；用户希望即使没有回复也继续不定时主动联系，未回复时通过较长随机间隔降低频率，不要仅因未回复而跳过；如果对方有回应或聊天很热，可以在范围内稍早一些。若发送，message 必须是中文，遵循上面的可信角色设定，一至两句且不超过220字，自然承接当下，不提定时器、算法、活跃度或自动化，不催回复、不施压、不制造愧疚或排他依赖。若不发送，message 置为空字符串。next_delay_minutes 必须落在允许范围内。只输出符合 schema 的 JSON。"""
 
 
 def parse_ping_decision(raw: str, minimum_delay: int, maximum_delay: int) -> dict[str, Any]:
@@ -851,8 +848,7 @@ def run_ping(
         rp["last_engagement"] = engagement
         sent_today = int(rp.get("sent_today") or 0)
         unanswered = int(rp.get("consecutive_unanswered") or 0)
-        silent_daily_limit = engagement in {"quiet", "cold"} and sent_today >= 1
-        if not force and (sent_today >= config.max_rp_per_day or silent_daily_limit or unanswered >= MAX_CONSECUTIVE_UNANSWERED):
+        if not force and sent_today >= config.max_rp_per_day:
             rp["status"] = "cooldown"
             rp["next_due_at"] = iso_utc(schedule_next_day(now, config.timezone, rng))
             rp["last_decision_at"] = iso_utc(now)

@@ -142,6 +142,54 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(state["status"], "error")
         self.assertGreater(scheduler.parse_timestamp(state["next_due_at"]), self.now)
 
+    def test_unanswered_pings_continue_with_long_delay(self) -> None:
+        for engagement in ("quiet", "cold"):
+            with self.subTest(engagement=engagement):
+                state = self.state()
+                state["rp"].update({
+                    "status": "cooldown",
+                    "sent_local_date": self.now.date().isoformat(),
+                    "sent_today": 2,
+                    "consecutive_unanswered": 8,
+                    "next_due_at": scheduler.iso_utc(self.now - timedelta(minutes=1)),
+                })
+                scheduler.save_state(self.config, state, self.now)
+                decision = json.dumps({"send": True, "message": "Hello.", "next_delay_minutes": 1})
+                with mock.patch.object(scheduler, "classify_engagement", return_value=engagement), mock.patch.object(
+                    scheduler, "run_codex_session_turn", return_value=decision
+                ), mock.patch.object(bridge, "send_message", return_value=[42]) as send:
+                    self.tick()
+                send.assert_called_once()
+                rp = self.state()["rp"]
+                self.assertEqual(rp["status"], "sent")
+                self.assertEqual(rp["sent_today"], 3)
+                self.assertEqual(rp["consecutive_unanswered"], 9)
+                minimum, _ = scheduler.delay_band(engagement)
+                self.assertGreaterEqual(
+                    scheduler.parse_timestamp(rp["next_due_at"]), self.now + timedelta(minutes=minimum)
+                )
+
+    def test_daily_cap_still_prevents_sending(self) -> None:
+        state = self.state()
+        state["rp"].update({"sent_local_date": self.now.date().isoformat(), "sent_today": 5})
+        scheduler.save_state(self.config, state, self.now)
+        with mock.patch.object(scheduler, "run_codex_session_turn") as generate:
+            self.tick()
+        generate.assert_not_called()
+        self.assertEqual(self.state()["rp"]["status"], "cooldown")
+
+    def test_night_tick_does_not_generate_or_send(self) -> None:
+        self.now = datetime(2026, 9, 5, 22, 0, tzinfo=timezone.utc)
+        with mock.patch.object(scheduler, "run_codex_session_turn") as generate, mock.patch.object(
+            bridge, "send_message"
+        ) as send:
+            self.tick()
+        generate.assert_not_called()
+        send.assert_not_called()
+        rp = self.state()["rp"]
+        self.assertEqual(rp["status"], "waiting_window")
+        self.assertTrue(scheduler.in_rp_window(scheduler.parse_timestamp(rp["next_due_at"]).astimezone(self.config.timezone)))
+
     def test_interrupted_send_is_not_automatically_duplicated(self) -> None:
         state = self.state()
         state["rp"]["status"] = "sending"
