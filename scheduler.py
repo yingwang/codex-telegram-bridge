@@ -125,7 +125,7 @@ def default_state(now: datetime, tz: ZoneInfo, rng: random.Random) -> dict[str, 
         },
         "rp": {
             "status": "idle",
-            "next_due_at": iso_utc(schedule_after(now, rng.randint(35, 95), tz, rng)),
+            "next_due_at": iso_utc(schedule_random_ping(now, tz, rng)),
             "last_decision_at": None,
             "last_sent_at": None,
             "last_reply_at": None,
@@ -324,6 +324,16 @@ def schedule_next_day(now: datetime, tz: ZoneInfo, rng: random.Random) -> dateti
     return avoid_clock_edges(candidate, rng).astimezone(timezone.utc)
 
 
+def schedule_random_ping(now: datetime, tz: ZoneInfo, rng: random.Random) -> datetime:
+    # Choose the interval independently of the model's send/skip decision.
+    candidates = [now + timedelta(minutes=minutes) for minutes in range(45, 91)]
+    candidates = [value for value in candidates if value.astimezone(tz).minute not in {0, 30}]
+    candidate = rng.choice(candidates)
+    if in_rp_window(candidate.astimezone(tz)):
+        return candidate.astimezone(timezone.utc)
+    return schedule_after(now, int((candidate - now).total_seconds() / 60), tz, rng)
+
+
 def news_due(state: dict[str, Any], now: datetime, tz: ZoneInfo, force: bool = False) -> bool:
     if force:
         return True
@@ -416,14 +426,7 @@ def classify_engagement(events: list[dict[str, Any]], rp: dict[str, Any], now: d
 
 
 def delay_band(engagement: str) -> tuple[int, int]:
-    return {
-        "hot": (45, 100),
-        "engaged": (75, 160),
-        "normal": (120, 240),
-        "quiet": (240, 420),
-        "cold": (300, 540),
-        "new": (60, 150),
-    }.get(engagement, (120, 240))
+    return (45, 90)
 
 
 def reset_rp_day(rp: dict[str, Any], now: datetime, tz: ZoneInfo) -> None:
@@ -431,8 +434,7 @@ def reset_rp_day(rp: dict[str, Any], now: datetime, tz: ZoneInfo) -> None:
     if rp.get("sent_local_date") != today:
         rp["sent_local_date"] = today
         rp["sent_today"] = 0
-        # Keep unanswered history until a reply arrives. Silence changes the
-        # random delay band, not whether proactive messages remain enabled.
+        # Keep unanswered history as context, without changing the cadence.
 
 
 def synchronize_reply_state(
@@ -456,7 +458,7 @@ def synchronize_reply_state(
     # the regular bridge.  Always move the proactive due time into the future:
     # this both accelerates an overly distant timer after a reply and prevents
     # an overdue scheduler tick from talking over the live conversation.
-    candidate = schedule_after(now, rng.randint(45, 100), config.timezone, rng)
+    candidate = schedule_random_ping(now, config.timezone, rng)
     rp["next_due_at"] = iso_utc(candidate)
     return True
 
@@ -646,7 +648,7 @@ def ping_prompt(
 {compact_conversation(events, limit=40)}
 ---
 
-决策规则：如果对方刚刚还在与普通 Telegram bridge 对话，通常不要另插一条重复消息；用户希望即使没有回复也继续不定时主动联系，未回复时通过较长随机间隔降低频率，不要仅因未回复而跳过；如果对方有回应或聊天很热，可以在范围内稍早一些。若发送，message 必须是中文，遵循上面的可信角色设定，一至两句且不超过220字，自然承接当下，不提定时器、算法、活跃度或自动化，不催回复、不施压、不制造愧疚或排他依赖。若不发送，message 置为空字符串。next_delay_minutes 必须落在允许范围内。只输出符合 schema 的 JSON。"""
+决策规则：每次到点只是一次判断机会，不是必须发送。根据近期对话、是否有自然的话题、是否重复或打扰来决定 send；如果对方刚刚还在与普通 Telegram bridge 对话，通常不要另插一条重复消息。用户希望即使没有回复也继续不定时主动联系，不要仅因未回复而跳过。无论发送还是跳过，程序都会独立随机安排45至90分钟后的下一次判断，不因活跃度改变间隔。若发送，message 必须是中文，遵循上面的可信角色设定，一至两句且不超过220字，自然承接当下，不提定时器、算法、活跃度或自动化，不催回复、不施压、不制造愧疚或排他依赖。若不发送，message 置为空字符串。next_delay_minutes 为兼容字段，必须落在允许范围内，但不控制实际随机排程。只输出符合 schema 的 JSON。"""
 
 
 def parse_ping_decision(raw: str, minimum_delay: int, maximum_delay: int) -> dict[str, Any]:
@@ -909,7 +911,7 @@ def run_ping(
             raise
 
         decided_at = utc_now()
-        next_due = schedule_after(now, decision["next_delay_minutes"], config.timezone, rng)
+        next_due = schedule_random_ping(utc_now(), config.timezone, rng)
         if not decision["send"]:
             rp.update({"status": "skipped", "next_due_at": iso_utc(next_due), "last_error": None})
             save_state(config, state, decided_at)

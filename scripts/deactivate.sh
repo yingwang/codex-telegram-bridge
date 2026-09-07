@@ -2,7 +2,15 @@
 set -euo pipefail
 
 CONFIG_DIR="$HOME/.codex/channels/telegram"
-RUNTIME="$CONFIG_DIR/current-session.json"
+RUNTIME="${TELEGRAM_RUNTIME_PATH:-$CONFIG_DIR/current-session.json}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# SessionEnd hooks receive JSON on stdin. An unrelated or malformed hook must
+# never stop the active bridge or remove its runtime file.
+if ! /usr/bin/python3 "$ROOT/scripts/session_end_guard.py" "$RUNTIME"; then
+  echo "Leaving the Telegram bridge alone: this hook does not authorize stopping its session."
+  exit 0
+fi
 
 is_bridge_pid() {
   local candidate="${1:-}"

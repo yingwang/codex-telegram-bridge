@@ -142,7 +142,35 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(state["status"], "error")
         self.assertGreater(scheduler.parse_timestamp(state["next_due_at"]), self.now)
 
-    def test_unanswered_pings_continue_with_long_delay(self) -> None:
+    def test_random_ping_interval_stays_in_range(self) -> None:
+        for minute in range(60):
+            now = self.now.replace(minute=minute, second=59)
+            for seed in range(20):
+                due = scheduler.schedule_random_ping(now, self.config.timezone, random.Random(seed))
+                self.assertGreaterEqual(due - now, timedelta(minutes=45))
+                self.assertLessEqual(due - now, timedelta(minutes=90))
+                self.assertNotIn(due.minute, {0, 30})
+
+    def test_all_engagement_levels_use_same_interval(self) -> None:
+        for engagement in ("hot", "engaged", "normal", "quiet", "cold", "new", "unknown"):
+            self.assertEqual(scheduler.delay_band(engagement), (45, 90))
+
+    def test_send_and_skip_both_reschedule_in_range(self) -> None:
+        for should_send in (True, False):
+            state = self.state()
+            state["rp"]["next_due_at"] = scheduler.iso_utc(self.now - timedelta(minutes=1))
+            scheduler.save_state(self.config, state, self.now)
+            decision = json.dumps({"send": should_send, "message": "Hello." if should_send else "", "next_delay_minutes": 540})
+            with mock.patch.object(scheduler, "run_codex_session_turn", return_value=decision), mock.patch.object(
+                bridge, "send_message", return_value=[42]
+            ) as send:
+                self.tick()
+            self.assertEqual(send.call_count, int(should_send))
+            delay = scheduler.parse_timestamp(self.state()["rp"]["next_due_at"]) - self.now
+            self.assertGreaterEqual(delay, timedelta(minutes=45))
+            self.assertLessEqual(delay, timedelta(minutes=90))
+
+    def test_unanswered_pings_continue_with_random_delay(self) -> None:
         for engagement in ("quiet", "cold"):
             with self.subTest(engagement=engagement):
                 state = self.state()
