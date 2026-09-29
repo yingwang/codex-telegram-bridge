@@ -54,12 +54,28 @@ is_bridge_pid() {
 # Only the head of the file is read, so a later conversation that happens to discuss
 # automations cannot be mistaken for one. A missing or unreadable rollout counts as
 # interactive, so a failed lookup can never stop a real session from activating.
+#
+# The `Automation ID:` line alone proved racy: on 2026-09-29 the hook ran before that
+# developer message reached the file, found only the first two lines, and handed the
+# bridge to the morning automation, so every Telegram reply ended in ::inbox-item. The
+# opening session_meta line is written before the hook fires and says the same thing
+# outright: thread_source "automation" for a scheduled run, source "exec" for a one-off
+# `codex exec` (which on 2026-09-28 also took the bridge and then exited with it).
 session_is_automation() {
   local thread="${1:-}"
   local rollout=""
   [[ -n "$thread" ]] || return 1
   rollout="$(/usr/bin/find "$HOME/.codex/sessions" -name "rollout-*-$thread.jsonl" -print 2>/dev/null | /usr/bin/head -n 1)"
   [[ -n "$rollout" && -r "$rollout" ]] || return 1
+  if /usr/bin/head -n 1 "$rollout" 2>/dev/null | /usr/bin/python3 -c 'import json,sys
+try:
+    meta = json.loads(sys.stdin.readline()).get("payload", {})
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if meta.get("thread_source") == "automation" or meta.get("source") == "exec" else 1)
+' 2>/dev/null; then
+    return 0
+  fi
   /usr/bin/head -n 10 "$rollout" 2>/dev/null | /usr/bin/grep -q "Automation ID:"
 }
 
