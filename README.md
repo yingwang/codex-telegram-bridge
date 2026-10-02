@@ -340,17 +340,6 @@ You can also stop the running bridge from Telegram:
 /stop
 ```
 
-### Watchdog
-
-The SessionStart hook does not always fire. A terminal Codex that opens while the app-server daemon is down only gets its conversation when the daemon comes back, with no SessionStart, so the bridge never starts. `scripts/watchdog.py` covers that case. Every two minutes it asks the daemon which conversations are loaded (`thread/loaded/list` over the control socket) and, when one that a person started has no bridge, or the bridge is bound to a conversation that is no longer loaded, it runs `activate_current_session.sh` for it. It waits for the problem to show on two runs in a row, ignores automations, `codex exec`, subagents and guardian reviews, and leaves a bridge stopped on purpose (`/stop`, `deactivate.sh`) stopped while its conversation stays open.
-
-```bash
-./scripts/install_watchdog.sh        # launchd job, every 120 s
-launchctl bootout gui/$(id -u)/com.ying.codex-telegram-bridge.watchdog   # remove it
-```
-
-It logs only when it acts, to `~/.codex/channels/telegram/watchdog.log`.
-
 ## Send from Codex CLI
 
 From the same Codex CLI session, send a Telegram message without starting another listener:
